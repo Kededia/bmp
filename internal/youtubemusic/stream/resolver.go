@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -64,20 +65,25 @@ func (resolver *YTDLPResolver) Resolve(ctx context.Context, videoID string) (res
 		return Result{}, fmt.Errorf("close temporary yt-dlp cookie file: %w", closeErr)
 	}
 
-	command := exec.CommandContext(ctx, "yt-dlp",
+	arguments := []string{
 		"--ignore-config",
 		"--dump-single-json",
 		"--no-playlist",
 		"--no-warnings",
 		"--js-runtimes", "node",
 		// ffmpeg plays any codec, so take the best audio-only stream: Opus at
-		// about 256 kbps with YouTube Music Premium. Dynamic-range-compressed
-		// variants are a last resort.
-		"--format", "bestaudio[format_id!*=drc]/bestaudio/best",
+		// about 256 kbps for YouTube Music Premium when bgutil-pot provides
+		// the PO token, else Opus at about 130 kbps. Only direct downloads
+		// qualify: an HLS format would be saved as its playlist.
+		// Dynamic-range-compressed variants are a last resort.
+		"--format", "bestaudio[protocol=https][format_id!*=drc]/bestaudio[protocol=https]/best[protocol=https]",
 		"--cookies", cookiePath,
-		"https://music.youtube.com/watch?v="+videoID,
-	)
+	}
+	arguments = append(arguments, tokenArguments()...)
+	command := exec.CommandContext(ctx, "yt-dlp", append(arguments, "https://music.youtube.com/watch?v="+videoID)...)
+	update.RLock()
 	output, err := command.Output()
+	update.RUnlock()
 	if err != nil {
 		if executionError, ok := err.(*exec.Error); ok {
 			return Result{}, fmt.Errorf("yt-dlp is unavailable: %w", executionError)
@@ -93,8 +99,30 @@ func (resolver *YTDLPResolver) Resolve(ctx context.Context, videoID string) (res
 	return parseOutput(output)
 }
 
+// tokenArguments points yt-dlp at bgutil-pot, which yt-dlp starts on demand
+// to create the PO token YouTube requires for Premium audio formats. Its
+// plugin is loaded from a yt-dlp-plugins folder beside it, as install-deps.cmd
+// lays them out, and from yt-dlp's default plugin folders.
+func tokenArguments() []string {
+	executable, err := exec.LookPath("bgutil-pot")
+	if err != nil {
+		return nil
+	}
+	if absolute, err := filepath.Abs(executable); err == nil {
+		executable = absolute
+	}
+	arguments := []string{"--extractor-args", "youtubepot-bgutilcli:cli_path=" + executable}
+	plugins := filepath.Join(filepath.Dir(executable), "yt-dlp-plugins")
+	if info, err := os.Stat(plugins); err == nil && info.IsDir() {
+		arguments = append(arguments, "--plugin-dirs", "default", "--plugin-dirs", plugins)
+	}
+	return arguments
+}
+
+// update serializes self-updates against resolves, so no resolve starts
+// yt-dlp while the updater is replacing it.
 var update struct {
-	sync.Mutex
+	sync.RWMutex
 	tried bool
 }
 

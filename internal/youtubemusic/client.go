@@ -233,6 +233,12 @@ func (client *Client) ResolveStream(ctx context.Context, videoID string) (stream
 	return resolved, nil
 }
 
+// UpdateYTDLP updates yt-dlp unless this session already did. An outdated
+// yt-dlp can keep working while YouTube serves it only worse formats.
+func UpdateYTDLP(ctx context.Context) {
+	_, _ = streamresolver.UpdateOnce(ctx)
+}
+
 // retryAfterUpdate retries a failed yt-dlp call once after updating yt-dlp,
 // since YouTube changes regularly break older releases.
 func retryAfterUpdate(ctx context.Context, err error, retry func() error) error {

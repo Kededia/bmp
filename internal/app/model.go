@@ -326,6 +326,8 @@ func readYouTubeMusicLibrary(parent context.Context, browser string) tea.Cmd {
 		if err != nil {
 			return youtubeMusicLibraryMsg{err: err}
 		}
+		// The browser cookie export is done, so yt-dlp is free to update itself.
+		go youtubemusic.UpdateYTDLP(parent)
 		account, accountErr := client.GetAccount(ctx)
 		playlists, err := client.GetLibraryPlaylists(ctx)
 		if err != nil {
@@ -930,7 +932,11 @@ func (m Model) View() string {
 			hints = []ui.Hint{{Key: "↵", Label: "add"}, {Key: "esc", Label: "cancel"}}
 		}
 	}
-	panel := ui.Panel("MUSIC", m.musicMainView(m.width, m.height), m.width, m.height, true, m.colors, hints...)
+	folderSize := ""
+	if m.youtubeMusicCacheSize >= 0 {
+		folderSize = "MUSIC FOLDER " + formatBytes(m.youtubeMusicCacheSize)
+	}
+	panel := ui.Panel("MUSIC", m.musicMainView(m.width, m.height), m.width, m.height, true, m.colors, folderSize, hints...)
 
 	rendered := lipgloss.NewStyle().Background(m.colors.Background).Render(panel)
 	return enforceThemeBackground(rendered, m.colors.Background)

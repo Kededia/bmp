@@ -403,7 +403,12 @@ func (m *Model) refreshPlayback() tea.Cmd {
 	if m.youtubeMusicPlayback.Err != nil {
 		m.youtubeMusicPlaybackErr = m.youtubeMusicPlayback.Err
 	}
-	if previousState == playback.StateEnded || m.youtubeMusicPlayback.State != playback.StateEnded || m.youtubeMusicResolving {
+	state := m.youtubeMusicPlayback.State
+	if state == playback.StateError && previousState != playback.StateError && !m.youtubeMusicResolving && m.youtubeMusicPlayingIndex >= 0 {
+		// A file that cannot play is skipped like a failed download.
+		return m.skipFailedTrack(m.youtubeMusicPlayingIndex)
+	}
+	if previousState == playback.StateEnded || state != playback.StateEnded || m.youtubeMusicResolving {
 		return nil
 	}
 	next := m.upcomingTrackIndex()

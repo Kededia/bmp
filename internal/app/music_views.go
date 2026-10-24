@@ -62,11 +62,6 @@ func (m Model) youtubeMusicBrowserView(innerWidth, height int) string {
 		account += "  ·  " + m.youtubeMusicAccount.Name
 	}
 	header := lipgloss.NewStyle().Foreground(m.colors.Cyan).Bold(true).Render(truncate(account, innerWidth))
-	if m.youtubeMusicCacheSize >= 0 {
-		size := "MUSIC FOLDER  " + formatBytes(m.youtubeMusicCacheSize)
-		header = lipgloss.NewStyle().Foreground(m.colors.Cyan).Bold(true).Render(truncate(account, max(1, innerWidth-len(size)-2)))
-		header = spread(header, muted.Render(size), innerWidth)
-	}
 	if m.youtubeMusicView == youtubeMusicPlaylistView {
 		return m.youtubeMusicPlaylistViewContent(header, innerWidth, height)
 	}

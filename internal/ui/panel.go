@@ -18,8 +18,9 @@ type Hint struct {
 
 // Panel renders a bordered dashboard pane at an exact outer size. The title is
 // embedded in the top border to preserve one additional row for content.
-// Interactive panes can supply compact keyboard hints pinned to the bottom.
-func Panel(title, content string, width, height int, focused bool, colors theme.Theme, hints ...Hint) string {
+// Interactive panes can supply compact keyboard hints pinned to the bottom,
+// with status right-aligned on the same row when it fits.
+func Panel(title, content string, width, height int, focused bool, colors theme.Theme, status string, hints ...Hint) string {
 	if width < 4 || height < 3 {
 		return ""
 	}
@@ -48,7 +49,12 @@ func Panel(title, content string, width, height int, focused bool, colors theme.
 		}
 	}
 	if len(hints) > 0 {
-		bodyLines = append(bodyLines, Shortcuts(colors, hints...))
+		footer := Shortcuts(colors, hints...)
+		if gap := width - 2 - lipgloss.Width(footer) - lipgloss.Width(status); status != "" && gap >= 2 {
+			footer += lipgloss.NewStyle().Background(colors.Background).Render(strings.Repeat(" ", gap)) +
+				lipgloss.NewStyle().Foreground(colors.Muted).Background(colors.Background).Render(status)
+		}
+		bodyLines = append(bodyLines, footer)
 	}
 	body := strings.Join(bodyLines, "\n")
 
