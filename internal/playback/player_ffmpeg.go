@@ -40,7 +40,7 @@ func openAudio() (*oto.Context, error) {
 	audioOnce.Do(func() {
 		output, ready, err := oto.NewContext(&oto.NewContextOptions{
 			SampleRate: sampleRate, ChannelCount: channelCount, Format: oto.FormatFloat32LE,
-			BufferSize: 80 * time.Millisecond, ApplicationName: "BMP",
+			BufferSize: 200 * time.Millisecond, ApplicationName: "BMP",
 		})
 		if err != nil {
 			audioErr = fmt.Errorf("open audio output: %w", err)
@@ -75,7 +75,7 @@ type ffmpegPlayer struct {
 // stream is one ffmpeg decode of the source, starting at start.
 type stream struct {
 	cancel  context.CancelFunc
-	pipe    *os.File
+	ahead   *readAhead
 	reader  *pcmReader
 	output  *oto.Player
 	log     *ffmpegLog
@@ -90,6 +90,7 @@ func New(analyzer *spectrum.Analyzer) (Player, error) {
 	if err != nil {
 		return nil, errors.New("ffmpeg is required for playback; run install-deps.cmd")
 	}
+	raisePriority()
 	audio, err := openAudio()
 	if err != nil {
 		return nil, err
@@ -151,12 +152,14 @@ func (player *ffmpegPlayer) startLocked(start time.Duration, paused bool) error 
 	}
 	_ = pipeWriter.Close()
 
-	reader := &pcmReader{source: pipeReader, analyzer: player.analyzer}
+	// Two seconds ahead of the audio output costs under 1 MB.
+	ahead := newReadAhead(pipeReader, 2*sampleRate*frameBytes)
+	reader := &pcmReader{source: ahead, analyzer: player.analyzer}
 	output := player.audio.NewPlayer(reader)
 	// About 100 ms ahead keeps memory low and the spectrum close to what plays.
 	output.SetBufferSize(sampleRate * frameBytes / 10)
 	output.SetVolume(player.gainLocked())
-	current := &stream{cancel: cancel, pipe: pipeReader, reader: reader, output: output, log: log, start: start, paused: paused}
+	current := &stream{cancel: cancel, ahead: ahead, reader: reader, output: output, log: log, start: start, paused: paused}
 	player.stream = current
 	go func() {
 		err := command.Wait()
@@ -178,7 +181,7 @@ func (player *ffmpegPlayer) stopStreamLocked() {
 	}
 	player.stream.output.Pause()
 	player.stream.cancel()
-	_ = player.stream.pipe.Close()
+	_ = player.stream.ahead.Close()
 	player.stream = nil
 }
 
