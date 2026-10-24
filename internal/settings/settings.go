@@ -10,11 +10,13 @@ import (
 
 // State contains small, user-specific values that should survive restarts.
 type State struct {
-	Theme   string     `json:"theme,omitempty"`
-	Volume  int        `json:"volume"`
-	Muted   bool       `json:"muted,omitempty"`
-	Shuffle bool       `json:"shuffle,omitempty"`
-	Music   MusicState `json:"music,omitempty"`
+	Theme    string     `json:"theme,omitempty"`
+	Volume   int        `json:"volume"`
+	Muted    bool       `json:"muted,omitempty"`
+	Shuffle  bool       `json:"shuffle,omitempty"`
+	Browser  string     `json:"browser,omitempty"`
+	MusicDir string     `json:"music_dir,omitempty"`
+	Music    MusicState `json:"music,omitempty"`
 }
 
 // MusicState identifies the exact playlist row, including intentional duplicates.

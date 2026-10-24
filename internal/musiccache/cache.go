@@ -49,14 +49,19 @@ type Cache struct {
 	index map[string]string // video ID to path, loaded on first Lookup
 }
 
-func NewFromEnvironment() (*Cache, error) {
+// NewFromEnvironment opens the cache in BMP_MUSIC_DIR when set, else in
+// directory, the folder chosen in setup, else in the default folder.
+func NewFromEnvironment(directory string) (*Cache, error) {
 	// Like the plays database, the cache lives beside the settings
 	// file, so it does not depend on the directory BMP is launched from.
 	settingsPath, err := settings.Path()
 	if err != nil {
 		return nil, err
 	}
-	directory := strings.TrimSpace(os.Getenv("BMP_MUSIC_DIR"))
+	if value := strings.TrimSpace(os.Getenv("BMP_MUSIC_DIR")); value != "" {
+		directory = value
+	}
+	directory = strings.TrimSpace(directory)
 	if directory == "" {
 		directory = "music"
 		if strings.HasPrefix(filepath.Base(settingsPath), ".") {

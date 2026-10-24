@@ -54,7 +54,7 @@ func (m Model) youtubeMusicBrowserView(innerWidth, height int) string {
 	if m.youtubeMusicErr != nil && len(m.youtubeMusicPlaylists) == 0 {
 		return lipgloss.NewStyle().Foreground(m.colors.Red).Bold(true).Render("YouTube Music unavailable") + "\n" +
 			muted.Render(truncate(m.youtubeMusicErr.Error(), innerWidth)) + "\n" +
-			muted.Render("Press Ctrl+R to retry authentication and reload the library.")
+			muted.Render("Press Ctrl+R to retry, or Ctrl+P to choose your browser in setup.")
 	}
 
 	account := "MUSIC LIBRARY"

@@ -47,9 +47,24 @@ type Client struct {
 	resolver *streamresolver.YTDLPResolver
 }
 
-func NewFromEnvironmentContext(ctx context.Context) (*Client, error) {
+// NewFromEnvironmentContext signs in with YTMUSIC_BROWSER or YTMUSIC_COOKIES
+// when either is set, else with browser, the one chosen in setup.
+func NewFromEnvironmentContext(ctx context.Context, browser string) (*Client, error) {
 	cookies := strings.TrimSpace(os.Getenv("YTMUSIC_COOKIES"))
-	if browser := strings.TrimSpace(os.Getenv("YTMUSIC_BROWSER")); browser != "" {
+	if value := strings.TrimSpace(os.Getenv("YTMUSIC_BROWSER")); value != "" || cookies != "" {
+		browser = value
+	}
+	return newClient(ctx, browser, cookies)
+}
+
+// NewForBrowser signs in with browser alone, so setup can check its choice
+// even when the environment would override it.
+func NewForBrowser(ctx context.Context, browser string) (*Client, error) {
+	return newClient(ctx, browser, "")
+}
+
+func newClient(ctx context.Context, browser, cookies string) (*Client, error) {
+	if browser = strings.TrimSpace(browser); browser != "" {
 		exported, err := auth.CookiesFromBrowser(ctx, browser)
 		err = retryAfterUpdate(ctx, err, func() error {
 			exported, err = auth.CookiesFromBrowser(ctx, browser)
@@ -60,7 +75,7 @@ func NewFromEnvironmentContext(ctx context.Context) (*Client, error) {
 		}
 		cookies = exported
 	} else if cookies == "" {
-		return nil, fmt.Errorf("%w: set YTMUSIC_BROWSER or YTMUSIC_COOKIES", ErrNotConfigured)
+		return nil, fmt.Errorf("%w: choose your browser in setup (Ctrl+P)", ErrNotConfigured)
 	}
 
 	authUser := 0

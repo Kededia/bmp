@@ -85,6 +85,14 @@ type Model struct {
 	terminalTitle                string
 	paletteOpen                  bool
 	paletteSelected              int
+	setupOpen                    bool
+	setupStep                    setupStep
+	setupSelected                int
+	setupChecking                bool
+	setupStatus                  string
+	setupStatusError             bool
+	setupBrowser                 string
+	setupFolder                  textinput.Model
 	now                          time.Time
 	colors                       theme.Theme
 	listScroll                   map[string]int
@@ -177,7 +185,12 @@ func New() Model {
 	localSearchInput.CharLimit = 256
 	applyTextInputTheme(&localSearchInput, selectedTheme)
 
-	musicCache, musicCacheError := musiccache.NewFromEnvironment()
+	setupFolderInput := textinput.New()
+	setupFolderInput.Prompt = "folder> "
+	setupFolderInput.CharLimit = 1024
+	applyTextInputTheme(&setupFolderInput, selectedTheme)
+
+	musicCache, musicCacheError := musiccache.NewFromEnvironment(persistedSettings.MusicDir)
 	musicStore, musicStoreError := musicstore.New()
 	var localPlaylists []youtubemusic.Playlist
 	if musicStoreError == nil {
@@ -209,7 +222,9 @@ func New() Model {
 		appCancel:                  appCancel,
 		now:                        time.Now(),
 		colors:                     selectedTheme,
-		youtubeMusicLoading:        true,
+		setupOpen:                  setupNeeded(persistedSettings.Browser),
+		setupFolder:                setupFolderInput,
+		youtubeMusicLoading:        !setupNeeded(persistedSettings.Browser),
 		youtubeMusicPlaylists:      append([]youtubemusic.Playlist(nil), localPlaylists...),
 		youtubeMusicLocalPlaylists: localPlaylists,
 		youtubeMusicPlayingIndex:   -1,
@@ -265,6 +280,7 @@ func (m *Model) applyTheme(selected theme.Theme) {
 	m.settingsGeneration++
 	applyTextInputTheme(&m.youtubeMusicURLInput, selected)
 	applyTextInputTheme(&m.youtubeMusicLocalSearch, selected)
+	applyTextInputTheme(&m.setupFolder, selected)
 }
 
 func applyTextInputTheme(input *textinput.Model, colors theme.Theme) {
@@ -276,7 +292,10 @@ func applyTextInputTheme(input *textinput.Model, colors theme.Theme) {
 }
 
 func (m Model) Init() tea.Cmd {
-	commands := []tea.Cmd{tea.SetWindowTitle(m.terminalTitle), tick(), readYouTubeMusicLibrary(m.appContext)}
+	commands := []tea.Cmd{tea.SetWindowTitle(m.terminalTitle), tick()}
+	if !m.setupOpen {
+		commands = append(commands, readYouTubeMusicLibrary(m.appContext, m.persistedSettings.Browser))
+	}
 	if m.musicRestoreLocalPlaylist.ID != "" {
 		playlist := m.musicRestoreLocalPlaylist
 		commands = append(commands, func() tea.Msg { return youtubeMusicPlaylistMsg{playlist: playlist} })
@@ -304,11 +323,11 @@ func (m *Model) syncMusicSpectrum() {
 	m.spectrumAnalyzer.Sync(snapshot.Source.Path, snapshot.State == playback.StatePlaying, snapshot.Position)
 }
 
-func readYouTubeMusicLibrary(parent context.Context) tea.Cmd {
+func readYouTubeMusicLibrary(parent context.Context, browser string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
-		client, err := youtubemusic.NewFromEnvironmentContext(ctx)
+		client, err := youtubemusic.NewFromEnvironmentContext(ctx, browser)
 		if err != nil {
 			return youtubeMusicLibraryMsg{err: err}
 		}
@@ -604,6 +623,9 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			m.markSettingsDirty()
 		}
 
+	case setupCheckMsg:
+		return m, m.handleSetupCheck(msg)
+
 	case youtubeMusicURLTrackMsg:
 		m.youtubeMusicURLResolving = false
 		m.youtubeMusicPlaybackErr = msg.err
@@ -614,6 +636,9 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+d" {
 			return m, tea.Quit
+		}
+		if m.setupOpen {
+			return m, m.handleSetupKey(msg)
 		}
 		if m.youtubeMusicURLPrompt {
 			switch msg.String() {
@@ -688,12 +713,17 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			case "esc", "ctrl+p":
 				m.paletteOpen = false
 			case "enter":
-				m.applyTheme(themeCommands[m.paletteSelected])
 				m.paletteOpen = false
+				if m.paletteSelected == len(themeCommands) {
+					m.openSetup()
+				} else {
+					m.applyTheme(themeCommands[m.paletteSelected])
+				}
 			case "up":
-				m.paletteSelected = (m.paletteSelected - 1 + len(themeCommands)) % len(themeCommands)
+				// The entry after the themes opens setup.
+				m.paletteSelected = (m.paletteSelected + len(themeCommands)) % (len(themeCommands) + 1)
 			case "down":
-				m.paletteSelected = (m.paletteSelected + 1) % len(themeCommands)
+				m.paletteSelected = (m.paletteSelected + 1) % (len(themeCommands) + 1)
 			}
 			return m, nil
 		}
@@ -716,7 +746,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			if !m.youtubeMusicLoading {
 				m.youtubeMusicLoading = true
 				m.youtubeMusicErr = nil
-				return m, readYouTubeMusicLibrary(m.appContext)
+				return m, readYouTubeMusicLibrary(m.appContext, m.persistedSettings.Browser)
 			}
 		case "enter":
 			if m.youtubeMusicView == youtubeMusicLibraryView && !m.youtubeMusicLoading && len(m.youtubeMusicPlaylists) > 0 {
@@ -867,6 +897,9 @@ func (m Model) View() string {
 		return enforceThemeBackground(message, m.colors.Background)
 	}
 
+	if m.setupOpen {
+		return enforceThemeBackground(m.setupView(), m.colors.Background)
+	}
 	if m.paletteOpen {
 		return enforceThemeBackground(m.paletteView(), m.colors.Background)
 	}
@@ -914,6 +947,12 @@ func (m Model) paletteView() string {
 		style := lipgloss.NewStyle().Foreground(m.colors.Foreground).Bold(index == m.paletteSelected)
 		lines = append(lines, cursor+style.Render(label))
 	}
+	cursor := "  "
+	if m.paletteSelected == len(themeCommands) {
+		cursor = lipgloss.NewStyle().Foreground(m.colors.Magenta).Bold(true).Render("> ")
+	}
+	lines = append(lines, "", lipgloss.NewStyle().Foreground(m.colors.Muted).Render("SETUP"),
+		cursor+lipgloss.NewStyle().Foreground(m.colors.Foreground).Bold(m.paletteSelected == len(themeCommands)).Render("browser and music folder"))
 	lines = append(lines, "", ui.Shortcuts(m.colors,
 		ui.Hint{Key: "↑↓", Label: "select"},
 		ui.Hint{Key: "↵", Label: "apply"},
