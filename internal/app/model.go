@@ -113,6 +113,14 @@ type Model struct {
 	youtubeMusicLocalSelected     int
 	youtubeMusicLocalSearch       textinput.Model
 	youtubeMusicLocalSearching    bool
+	youtubeMusicSearchOpen        bool
+	youtubeMusicSearchAdding      bool
+	youtubeMusicSearchInput       textinput.Model
+	youtubeMusicSearchResults     []youtubemusic.Track
+	youtubeMusicSearchSelected    int
+	youtubeMusicSearchGeneration  int
+	youtubeMusicSearchLoading     bool
+	youtubeMusicSearchErr         error
 	youtubeMusicURLPrompt         bool
 	youtubeMusicURLResolving      bool
 	youtubeMusicURLInput          textinput.Model
@@ -189,6 +197,12 @@ func New() Model {
 	localSearchInput.CharLimit = 256
 	applyTextInputTheme(&localSearchInput, selectedTheme)
 
+	searchInput := textinput.New()
+	searchInput.Prompt = "search> "
+	searchInput.Placeholder = "song, artist or album"
+	searchInput.CharLimit = 256
+	applyTextInputTheme(&searchInput, selectedTheme)
+
 	setupFolderInput := textinput.New()
 	setupFolderInput.Prompt = "folder> "
 	setupFolderInput.CharLimit = 1024
@@ -248,6 +262,7 @@ func New() Model {
 		listScroll:                 make(map[string]int),
 		youtubeMusicURLInput:       musicURLInput,
 		youtubeMusicLocalSearch:    localSearchInput,
+		youtubeMusicSearchInput:    searchInput,
 		persistedSettings:          persistedSettings,
 		settingsErr:                settingsError,
 		settingsLastSaved:          time.Now(),
@@ -283,6 +298,7 @@ func (m *Model) applyTheme(selected theme.Theme) {
 	m.settingsGeneration++
 	applyTextInputTheme(&m.youtubeMusicURLInput, selected)
 	applyTextInputTheme(&m.youtubeMusicLocalSearch, selected)
+	applyTextInputTheme(&m.youtubeMusicSearchInput, selected)
 	applyTextInputTheme(&m.setupFolder, selected)
 }
 
@@ -375,6 +391,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.youtubeMusicURLInput.Width = max(10, m.width-10)
+		m.youtubeMusicSearchInput.Width = max(10, m.width-13)
 
 	case tickMsg:
 		previous := m.now
@@ -637,6 +654,12 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 	case setupCheckMsg:
 		return m, m.handleSetupCheck(msg)
 
+	case youtubeMusicSearchTickMsg:
+		return m, m.handleSearchTick(msg)
+
+	case youtubeMusicSearchMsg:
+		m.handleSearchResults(msg)
+
 	case youtubeMusicURLTrackMsg:
 		m.youtubeMusicURLResolving = false
 		m.youtubeMusicPlaybackErr = msg.err
@@ -650,6 +673,9 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		}
 		if m.setupOpen {
 			return m, m.handleSetupKey(msg)
+		}
+		if m.youtubeMusicSearchOpen {
+			return m, m.handleSearchKey(msg)
 		}
 		if m.youtubeMusicURLPrompt {
 			switch msg.String() {
@@ -857,6 +883,10 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			if m.youtubeMusicView == youtubeMusicPlaylistView {
 				m.beginLocalTrackPicker()
 			}
+		case "/":
+			if !m.youtubeMusicLoading {
+				return m, m.openSearch()
+			}
 		case "u", "U":
 			if m.youtubeMusicView == youtubeMusicPlaylistView {
 				m.youtubeMusicURLInput.SetValue("")
@@ -914,15 +944,21 @@ func (m Model) View() string {
 		return enforceThemeBackground(m.paletteView(), m.colors.Background)
 	}
 
-	hints := []ui.Hint{{Key: "↑↓", Label: "select"}, {Key: "↵", Label: "open"}, {Key: "^R", Label: "refresh"}}
-	if m.youtubeMusicDeletePending != youtubeMusicDeleteNone {
+	hints := []ui.Hint{{Key: "↑↓", Label: "select"}, {Key: "↵", Label: "open"}, {Key: "/", Label: "search"}, {Key: "^R", Label: "refresh"}}
+	if m.youtubeMusicSearchOpen {
+		pick := "play"
+		if m.youtubeMusicSearchAdding {
+			pick = "add"
+		}
+		hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: pick}, {Key: "esc", Label: "close"}}
+	} else if m.youtubeMusicDeletePending != youtubeMusicDeleteNone {
 		hints = []ui.Hint{{Key: "D", Label: "confirm delete"}, {Key: "esc", Label: "cancel"}}
 	} else if m.youtubeMusicView == youtubeMusicPlaylistView {
 		playLabel := "play"
 		if m.youtubeMusicPlayback.State == playback.StatePlaying {
 			playLabel = "pause"
 		}
-		hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: "play"}, {Key: "space", Label: playLabel}, {Key: "⇧←→", Label: "seek"}, {Key: "S", Label: "shuffle"}, {Key: "A", Label: "local"}, {Key: "U", Label: "url"}, {Key: "D", Label: "remove"}, {Key: "⌫"}}
+		hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: "play"}, {Key: "space", Label: playLabel}, {Key: "⇧←→", Label: "seek"}, {Key: "S", Label: "shuffle"}, {Key: "A", Label: "local"}, {Key: "U", Label: "url"}, {Key: "/", Label: "search"}, {Key: "D", Label: "remove"}, {Key: "⌫"}}
 		if m.youtubeMusicAddingLocal {
 			hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: "add"}, {Key: "/", Label: "search"}, {Key: "esc", Label: "cancel"}}
 			if m.youtubeMusicLocalSearching {

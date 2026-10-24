@@ -125,7 +125,12 @@ func parseTrackRenderers(payload any) []Track {
 			for _, value := range runsAt(columns[1], "musicResponsiveListItemFlexColumnRenderer", "text") {
 				run, _ := value.(map[string]any)
 				name := strings.TrimSpace(stringValue(run["text"]))
-				if name == "" || name == "•" || looksLikeDuration(name) {
+				if name == "" || name == "•" {
+					continue
+				}
+				// Search results show the duration here rather than in a fixed column.
+				if duration, ok := parseDuration(name); ok {
+					track.Duration = duration
 					continue
 				}
 				id := stringAt(run, "navigationEndpoint", "browseEndpoint", "browseId")
@@ -363,9 +368,4 @@ func parseDuration(value string) (time.Duration, bool) {
 		seconds = seconds*60 + value
 	}
 	return time.Duration(seconds) * time.Second, true
-}
-
-func looksLikeDuration(value string) bool {
-	_, ok := parseDuration(value)
-	return ok
 }

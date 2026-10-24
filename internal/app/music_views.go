@@ -44,6 +44,9 @@ func (m Model) youtubeMusicBrowserView(innerWidth, height int) string {
 	if m.youtubeMusicAddingLocal {
 		return m.youtubeMusicLocalTrackPickerView(innerWidth, height)
 	}
+	if m.youtubeMusicSearchOpen {
+		return m.youtubeMusicSearchView(innerWidth, height)
+	}
 	if m.youtubeMusicLoading {
 		message := "Loading YouTube Music library…"
 		if len(m.youtubeMusicPlaylists) > 0 {

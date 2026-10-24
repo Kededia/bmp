@@ -129,6 +129,11 @@ func (client *Client) Browse(ctx context.Context, browseID, continuation string)
 	return client.call(ctx, "browse", body)
 }
 
+// Search invokes the search endpoint. Params selects a result filter.
+func (client *Client) Search(ctx context.Context, query, params string) (map[string]any, error) {
+	return client.call(ctx, "search", map[string]any{"query": query, "params": params})
+}
+
 func (client *Client) call(ctx context.Context, endpoint string, body map[string]any) (map[string]any, error) {
 	if client == nil || client.session == nil {
 		return nil, errors.New("YouTube Music client is not configured")

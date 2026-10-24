@@ -210,6 +210,27 @@ func (client *Client) GetPlaylist(ctx context.Context, id string) (Playlist, err
 	return playlist, nil
 }
 
+// songsFilter is the search params YouTube Music's Songs filter sends.
+const songsFilter = "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"
+
+// Search returns the songs YouTube Music finds for query, best match first.
+func (client *Client) Search(ctx context.Context, query string) ([]Track, error) {
+	if client == nil || client.api == nil {
+		return nil, errors.New("YouTube Music client is not configured")
+	}
+	payload, err := client.api.Search(ctx, query, songsFilter)
+	if err != nil {
+		return nil, classifyError(err)
+	}
+	var tracks []Track
+	for _, track := range parseTrackRenderers(payload) {
+		if track.Available {
+			tracks = append(tracks, track)
+		}
+	}
+	return tracks, nil
+}
+
 // ResolveStream resolves a temporary playable audio URL using the configured resolver.
 func (client *Client) ResolveStream(ctx context.Context, videoID string) (streamresolver.Result, error) {
 	if client == nil || client.resolver == nil {
