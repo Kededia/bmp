@@ -6,8 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -39,10 +37,10 @@ type playerCommand struct {
 	operation operation
 	source    Source
 	mediaURL  string
-	temporary bool
 	volume    int
 	delta     int
 	position  time.Duration
+	paused    bool
 	result    chan error
 }
 
@@ -51,11 +49,18 @@ type windowsPlayer struct {
 	done      chan struct{}
 	closeOnce sync.Once
 
-	mu             sync.RWMutex
-	snapshot       Snapshot
-	mediaFile      string
-	mediaTemporary bool
-	volumePending  bool
+	mu            sync.RWMutex
+	snapshot      Snapshot
+	mediaFile     string
+	volumePending bool
+
+	// A silent start plays muted from 0:00 until audio runs, then seeks to
+	// restorePosition and pauses when restorePaused is set. holdMute keeps
+	// the output muted until the poll after that, so no pre-seek audio leaks.
+	restorePending  bool
+	restorePosition time.Duration
+	restorePaused   bool
+	holdMute        bool
 }
 
 // New creates a Windows Media Player COM session on a dedicated OS thread.
@@ -73,37 +78,21 @@ func New() (Player, error) {
 	return player, nil
 }
 
-func (player *windowsPlayer) Play(ctx context.Context, source Source) error {
-	mediaURL := ""
-	temporary := false
-	if strings.TrimSpace(source.Path) != "" {
-		mediaURL = filepath.Clean(source.Path)
-		info, err := os.Stat(mediaURL)
-		if err != nil {
-			return fmt.Errorf("open cached audio: %w", err)
-		}
-		if info.IsDir() {
-			return errors.New("cached audio path is a directory")
-		}
-	} else {
-		if source.URL == "" {
-			return errors.New("audio source URL is empty")
-		}
-		var err error
-		mediaURL, err = materializeSource(ctx, source)
-		if err != nil {
-			return err
-		}
-		temporary = true
+func (player *windowsPlayer) Play(ctx context.Context, source Source, start time.Duration, paused bool) error {
+	if strings.TrimSpace(source.Path) == "" {
+		return errors.New("audio source path is empty")
 	}
-	command := playerCommand{operation: operationPlay, source: source, mediaURL: mediaURL, temporary: temporary, result: make(chan error, 1)}
-	if err := player.send(ctx, command); err != nil {
-		if temporary {
-			_ = os.Remove(mediaURL)
-		}
-		return err
+	mediaURL := filepath.Clean(source.Path)
+	info, err := os.Stat(mediaURL)
+	if err != nil {
+		return fmt.Errorf("open cached audio: %w", err)
 	}
-	return nil
+	if info.IsDir() {
+		return errors.New("cached audio path is a directory")
+	}
+	return player.send(ctx, playerCommand{
+		operation: operationPlay, source: source, mediaURL: mediaURL, position: max(0, start), paused: paused, result: make(chan error, 1),
+	})
 }
 
 func (player *windowsPlayer) Toggle(ctx context.Context) error {
@@ -260,10 +249,10 @@ func (player *windowsPlayer) handleCommand(dispatch, controls, settings *ole.IDi
 	case operationPlay:
 		_ = callMethod(controls, "stop")
 		player.releaseMedia(dispatch)
+		// The error queue outlives the media it reports on; a stale entry would
+		// turn every later stop, including a normal track end, into an error.
+		clearMediaErrors(dispatch)
 		if result, err := oleutil.PutProperty(dispatch, "URL", command.mediaURL); err != nil {
-			if command.temporary {
-				_ = os.Remove(command.mediaURL)
-			}
 			return player.commandError("open audio", err)
 		} else if result != nil {
 			_ = result.Clear()
@@ -272,14 +261,17 @@ func (player *windowsPlayer) handleCommand(dispatch, controls, settings *ole.IDi
 		if err := putProperty(settings, "volume", snapshot.Volume); err != nil {
 			return player.commandError("set volume", err)
 		}
+		player.restorePending = command.position > 0 || command.paused
+		player.restorePosition = command.position
+		player.restorePaused = command.paused
+		player.holdMute = player.restorePending
+		if err := putProperty(settings, "mute", player.holdMute || snapshot.Muted); err != nil {
+			return player.commandError("set mute", err)
+		}
 		if err := callMethod(controls, "play"); err != nil {
-			if command.temporary {
-				_ = os.Remove(command.mediaURL)
-			}
 			return player.commandError("play audio", err)
 		}
 		player.mediaFile = command.mediaURL
-		player.mediaTemporary = command.temporary
 		player.volumePending = true
 		player.mu.Lock()
 		volume, muted := player.snapshot.Volume, player.snapshot.Muted
@@ -287,6 +279,10 @@ func (player *windowsPlayer) handleCommand(dispatch, controls, settings *ole.IDi
 		player.mu.Unlock()
 		return nil
 	case operationToggle:
+		if player.restorePending {
+			player.restorePaused = !player.restorePaused
+			return nil
+		}
 		state := player.Snapshot().State
 		method := "play"
 		if state == StatePlaying || state == StateBuffering || state == StateOpening {
@@ -300,12 +296,18 @@ func (player *windowsPlayer) handleCommand(dispatch, controls, settings *ole.IDi
 		if err := callMethod(controls, "stop"); err != nil {
 			return player.commandError("stop audio", err)
 		}
+		player.restorePending = false
+		player.releaseMute(settings)
 		player.mu.Lock()
 		player.snapshot.State = StateStopped
 		player.snapshot.Position = 0
 		player.mu.Unlock()
 		return nil
 	case operationSeek:
+		if player.restorePending {
+			player.restorePosition = command.position
+			return nil
+		}
 		seconds := command.position.Seconds()
 		if err := putProperty(controls, "currentPosition", seconds); err != nil {
 			return player.commandError("seek audio", err)
@@ -327,8 +329,10 @@ func (player *windowsPlayer) handleCommand(dispatch, controls, settings *ole.IDi
 		return nil
 	case operationToggleMute:
 		muted := !player.Snapshot().Muted
-		if err := putProperty(settings, "mute", muted); err != nil {
-			return player.commandError("toggle mute", err)
+		if !player.holdMute {
+			if err := putProperty(settings, "mute", muted); err != nil {
+				return player.commandError("toggle mute", err)
+			}
 		}
 		player.mu.Lock()
 		player.snapshot.Muted = muted
@@ -360,6 +364,15 @@ func (player *windowsPlayer) applyVolume(settings *ole.IDispatch, volume int) er
 	return nil
 }
 
+// releaseMute ends a silent start's forced mute, applying the user's setting.
+func (player *windowsPlayer) releaseMute(settings *ole.IDispatch) {
+	if !player.holdMute {
+		return
+	}
+	player.holdMute = false
+	_ = putProperty(settings, "mute", player.Snapshot().Muted)
+}
+
 func (player *windowsPlayer) releaseMedia(dispatch *ole.IDispatch) {
 	if player.mediaFile == "" {
 		return
@@ -367,65 +380,7 @@ func (player *windowsPlayer) releaseMedia(dispatch *ole.IDispatch) {
 	if result, err := oleutil.PutProperty(dispatch, "URL", ""); err == nil && result != nil {
 		_ = result.Clear()
 	}
-	if player.mediaTemporary {
-		_ = os.Remove(player.mediaFile)
-	}
 	player.mediaFile = ""
-	player.mediaTemporary = false
-}
-
-func materializeSource(ctx context.Context, source Source) (path string, returnErr error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.URL, nil)
-	if err != nil {
-		return "", fmt.Errorf("prepare audio download: %w", err)
-	}
-	for name, value := range source.HTTPHeaders {
-		request.Header.Set(name, value)
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return "", fmt.Errorf("download audio: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("download audio: HTTP %s", response.Status)
-	}
-	const maximumAudioSize = int64(256 << 20)
-	if response.ContentLength > maximumAudioSize {
-		return "", fmt.Errorf("download audio: source is too large (%d bytes)", response.ContentLength)
-	}
-	extension := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(source.Container), "."))
-	if extension == "" || strings.IndexFunc(extension, func(r rune) bool {
-		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
-	}) >= 0 {
-		extension = "m4a"
-	}
-	file, err := os.CreateTemp("", "bmp-audio-*."+extension)
-	if err != nil {
-		return "", fmt.Errorf("create temporary audio file: %w", err)
-	}
-	path = filepath.Clean(file.Name())
-	defer func() {
-		closeErr := file.Close()
-		if returnErr == nil && closeErr != nil {
-			returnErr = fmt.Errorf("close temporary audio file: %w", closeErr)
-		}
-		if returnErr != nil {
-			_ = os.Remove(path)
-			path = ""
-		}
-	}()
-	written, err := io.Copy(file, io.LimitReader(response.Body, maximumAudioSize+1))
-	if err != nil {
-		return "", fmt.Errorf("download audio: %w", err)
-	}
-	if written > maximumAudioSize {
-		return "", errors.New("download audio: source exceeded 256 MiB")
-	}
-	if written == 0 {
-		return "", errors.New("download audio: source was empty")
-	}
-	return path, nil
 }
 
 func (player *windowsPlayer) poll(dispatch, controls, settings *ole.IDispatch) {
@@ -457,6 +412,21 @@ func (player *windowsPlayer) poll(dispatch, controls, settings *ole.IDispatch) {
 		_ = mediaVariant.Clear()
 	}
 
+	if !player.restorePending {
+		player.releaseMute(settings)
+	}
+	if state == StatePlaying && player.restorePending {
+		player.restorePending = false
+		_ = putProperty(controls, "currentPosition", player.restorePosition.Seconds())
+		position = player.restorePosition
+		if player.restorePaused {
+			_ = callMethod(controls, "pause")
+		}
+		// Report opening until the next poll reads the settled state, so the
+		// spectrum never starts from the pre-seek position.
+		state = StateOpening
+	}
+
 	if state == StatePlaying && player.volumePending {
 		// A fresh WMPlayer.OCX session, notably after system sleep, can ignore
 		// the volume set before playback starts. Re-apply it once audio runs,
@@ -480,7 +450,9 @@ func (player *windowsPlayer) poll(dispatch, controls, settings *ole.IDispatch) {
 	}
 	player.snapshot.State = state
 	player.snapshot.Position = position
-	player.snapshot.Muted = boolProperty(settings, "mute")
+	if !player.holdMute {
+		player.snapshot.Muted = boolProperty(settings, "mute")
+	}
 	if duration > 0 {
 		player.snapshot.Duration = duration
 	}
@@ -532,16 +504,6 @@ func putProperty(dispatch *ole.IDispatch, name string, value any) error {
 	return err
 }
 
-func integerProperty(dispatch *ole.IDispatch, name string) int {
-	variant, err := oleutil.GetProperty(dispatch, name)
-	if err != nil {
-		return 0
-	}
-	defer variant.Clear()
-	value, _ := integerValue(variant.Value())
-	return value
-}
-
 func boolProperty(dispatch *ole.IDispatch, name string) bool {
 	variant, err := oleutil.GetProperty(dispatch, name)
 	if err != nil {
@@ -557,6 +519,17 @@ func boolProperty(dispatch *ole.IDispatch, name string) bool {
 		return value != 0
 	default:
 		return false
+	}
+}
+
+func clearMediaErrors(dispatch *ole.IDispatch) {
+	errorVariant, err := oleutil.GetProperty(dispatch, "error")
+	if err != nil {
+		return
+	}
+	defer errorVariant.Clear()
+	if errorDispatch := errorVariant.ToIDispatch(); errorDispatch != nil {
+		_ = callMethod(errorDispatch, "clearErrorQueue")
 	}
 }
 

@@ -37,6 +37,7 @@ type youtubeMusicPlaylistMsg struct {
 }
 
 type youtubeMusicPlaybackMsg struct {
+	generation int
 	player     playback.Player
 	trackIndex int
 	videoID    string
@@ -77,21 +78,26 @@ type settingsSavedMsg struct {
 }
 
 type Model struct {
-	appContext                    context.Context
-	appCancel                     context.CancelFunc
-	width                         int
-	height                        int
-	terminalTitle                 string
-	paletteOpen                   bool
-	paletteSelected               int
-	now                           time.Time
-	colors                        theme.Theme
-	listScroll                    map[string]int
-	youtubeMusicClient            *youtubemusic.Client
-	youtubeMusicAccount           youtubemusic.Account
-	youtubeMusicPlaylists         []youtubemusic.Playlist
-	youtubeMusicPlaylistSelected  int
-	youtubeMusicPlaylist          youtubemusic.Playlist
+	appContext                   context.Context
+	appCancel                    context.CancelFunc
+	width                        int
+	height                       int
+	terminalTitle                string
+	paletteOpen                  bool
+	paletteSelected              int
+	now                          time.Time
+	colors                       theme.Theme
+	listScroll                   map[string]int
+	youtubeMusicClient           *youtubemusic.Client
+	youtubeMusicAccount          youtubemusic.Account
+	youtubeMusicPlaylists        []youtubemusic.Playlist
+	youtubeMusicPlaylistSelected int
+	youtubeMusicPlaylist         youtubemusic.Playlist
+	// youtubeMusicQueue is the playlist playback runs from. The playing, loop,
+	// pending and shuffle-history positions index it, not the open playlist.
+	youtubeMusicQueue             youtubemusic.Playlist
+	youtubeMusicShuffleHistory    []int
+	youtubeMusicShuffleBack       bool
 	youtubeMusicLocalPlaylists    []youtubemusic.Playlist
 	youtubeMusicTrackSelected     int
 	youtubeMusicView              youtubeMusicView
@@ -114,6 +120,7 @@ type Model struct {
 	youtubeMusicResolving         bool
 	youtubeMusicPlayingIndex      int
 	youtubeMusicPlayingVideoID    string
+	youtubeMusicPlayGeneration    int
 	youtubeMusicLoopTrackIndex    int
 	youtubeMusicShuffle           bool
 	youtubeMusicCache             *musiccache.Cache
@@ -364,24 +371,12 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			}
 		}
 		if m.youtubeMusicPlayer != nil {
-			previousState := m.youtubeMusicPlayback.State
-			m.youtubeMusicPlayback = m.youtubeMusicPlayer.Snapshot()
-			m.syncMusicSpectrum()
+			if command := m.refreshPlayback(); command != nil {
+				commands = append(commands, command)
+			}
 			if spectrumRefreshActive(m.youtubeMusicPlayback.State) && !m.spectrumTicking {
 				m.spectrumTicking = true
 				commands = append(commands, spectrumTick())
-			}
-			if m.youtubeMusicPlayback.Err != nil {
-				m.youtubeMusicPlaybackErr = m.youtubeMusicPlayback.Err
-			}
-			if command := m.restoreMusicPositionCommand(); command != nil {
-				commands = append(commands, command)
-			}
-			if previousState != playback.StateEnded && m.youtubeMusicPlayback.State == playback.StateEnded && !m.youtubeMusicResolving {
-				next := automaticTrackIndex(m.youtubeMusicPlaylist.Tracks, m.youtubeMusicPlayingIndex, m.youtubeMusicLoopTrackIndex, m.youtubeMusicShuffle)
-				if command := m.requestYouTubeTrack(next); command != nil {
-					commands = append(commands, command)
-				}
 			}
 			m.markSettingsDirty()
 		}
@@ -395,21 +390,12 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			m.spectrumTicking = false
 			return m, nil
 		}
-		previousState := m.youtubeMusicPlayback.State
-		m.youtubeMusicPlayback = m.youtubeMusicPlayer.Snapshot()
-		m.syncMusicSpectrum()
-		if command := m.restoreMusicPositionCommand(); command != nil {
-			return m, tea.Batch(command, spectrumTick())
-		}
+		command := m.refreshPlayback()
 		if !spectrumRefreshActive(m.youtubeMusicPlayback.State) {
 			m.spectrumTicking = false
-			if previousState != playback.StateEnded && m.youtubeMusicPlayback.State == playback.StateEnded && !m.youtubeMusicResolving {
-				next := automaticTrackIndex(m.youtubeMusicPlaylist.Tracks, m.youtubeMusicPlayingIndex, m.youtubeMusicLoopTrackIndex, m.youtubeMusicShuffle)
-				return m, m.requestYouTubeTrack(next)
-			}
-			return m, nil
+			return m, command
 		}
-		return m, spectrumTick()
+		return m, tea.Batch(command, spectrumTick())
 
 	case settingsSavedMsg:
 		m.settingsSaving = false
@@ -467,14 +453,13 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		restoring := m.musicRestorePending && msg.err == nil && msg.playlist.ID == m.persistedSettings.Music.PlaylistID
 		m.musicRestorePending = false
 		if msg.err == nil {
-			m.cancelYouTubeQueue()
 			m.youtubeMusicPlaylist = msg.playlist
-			m.youtubeMusicPlayingIndex = -1
-			for index, track := range msg.playlist.Tracks {
-				if track.VideoID == m.youtubeMusicPlayingVideoID {
-					m.youtubeMusicPlayingIndex = index
-					break
-				}
+			m.youtubeMusicTrackSelected = 0
+			if m.browsingQueue() {
+				// Show the queue itself so its rows match the positions playback uses.
+				m.youtubeMusicPlaylist = m.youtubeMusicQueue
+				m.youtubeMusicPlaylist.Tracks = append([]youtubemusic.Track(nil), m.youtubeMusicQueue.Tracks...)
+				m.youtubeMusicTrackSelected = max(0, m.youtubeMusicPlayingIndex)
 			}
 			for index, playlist := range m.youtubeMusicPlaylists {
 				if playlist.ID == msg.playlist.ID {
@@ -482,8 +467,6 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 					break
 				}
 			}
-			m.youtubeMusicTrackSelected = 0
-			m.youtubeMusicLoopTrackIndex = -1
 			m.youtubeMusicView = youtubeMusicPlaylistView
 			if m.youtubeMusicCache != nil {
 				if cachedTracks, cacheErr := m.youtubeMusicCache.Tracks(); cacheErr == nil {
@@ -493,8 +476,8 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				}
 			}
 			if m.youtubeMusicStore != nil {
-				videoIDs := make([]string, 0, len(msg.playlist.Tracks))
-				for _, track := range msg.playlist.Tracks {
+				videoIDs := make([]string, 0, len(m.youtubeMusicPlaylist.Tracks))
+				for _, track := range m.youtubeMusicPlaylist.Tracks {
 					videoIDs = append(videoIDs, track.VideoID)
 				}
 				m.youtubeMusicPlayCounts, m.youtubeMusicStoreErr = m.youtubeMusicStore.Counts(videoIDs)
@@ -513,6 +496,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 					}
 				}
 				if index >= 0 {
+					m.queueBrowsedPlaylist()
 					m.youtubeMusicTrackSelected = index
 					m.youtubeMusicLoopTrackIndex = restored.LoopTrackIndex
 					if m.youtubeMusicLoopTrackIndex < 0 || m.youtubeMusicLoopTrackIndex >= len(msg.playlist.Tracks) {
@@ -535,15 +519,15 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		commands := make([]tea.Cmd, 0, 2)
 		if msg.path != "" && msg.videoID != "" {
 			m.youtubeMusicCached[msg.videoID] = msg.path
-			if msg.trackIndex == m.youtubeMusicPendingIndex && msg.trackIndex >= 0 && msg.trackIndex < len(m.youtubeMusicPlaylist.Tracks) &&
-				m.youtubeMusicPlaylist.Tracks[msg.trackIndex].VideoID == msg.videoID {
+			if msg.trackIndex == m.youtubeMusicPendingIndex && msg.trackIndex >= 0 && msg.trackIndex < len(m.youtubeMusicQueue.Tracks) &&
+				m.youtubeMusicQueue.Tracks[msg.trackIndex].VideoID == msg.videoID {
 				commands = append(commands, m.beginCachedYouTubeTrack(msg.trackIndex, msg.path))
 			}
 		}
-		if msg.err != nil && msg.trackIndex == m.youtubeMusicPendingIndex && msg.trackIndex >= 0 && msg.trackIndex < len(m.youtubeMusicPlaylist.Tracks) &&
-			m.youtubeMusicPlaylist.Tracks[msg.trackIndex].VideoID == msg.videoID {
+		if msg.err != nil && msg.trackIndex == m.youtubeMusicPendingIndex && msg.trackIndex >= 0 && msg.trackIndex < len(m.youtubeMusicQueue.Tracks) &&
+			m.youtubeMusicQueue.Tracks[msg.trackIndex].VideoID == msg.videoID {
 			m.youtubeMusicPlaybackErr = msg.err
-			m.youtubeMusicPendingIndex = playableTrackIndex(m.youtubeMusicPlaylist.Tracks, msg.trackIndex+1, 1)
+			m.youtubeMusicPendingIndex = playableTrackIndex(m.youtubeMusicQueue.Tracks, msg.trackIndex+1, 1)
 			m.youtubeMusicResolving = m.youtubeMusicPendingIndex >= 0
 		}
 		if msg.done {
@@ -559,15 +543,36 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		return m, tea.Batch(commands...)
 
 	case youtubeMusicPlaybackMsg:
+		if msg.generation != m.youtubeMusicPlayGeneration {
+			// A newer request superseded this one; close any session it created.
+			if player := msg.player; player != nil && player != m.youtubeMusicPlayer {
+				return m, func() tea.Msg {
+					_ = player.Close()
+					return nil
+				}
+			}
+			return m, nil
+		}
 		m.youtubeMusicResolving = false
 		m.youtubeMusicPlaybackErr = msg.err
 		if msg.player != nil {
 			m.youtubeMusicPlayer = msg.player
 		}
 		if msg.err == nil {
+			if previous := m.youtubeMusicPlayingIndex; previous != msg.trackIndex {
+				history := m.youtubeMusicShuffleHistory
+				if count := len(history); m.youtubeMusicShuffleBack && count > 0 && history[count-1] == msg.trackIndex {
+					m.youtubeMusicShuffleHistory = history[:count-1]
+				} else if m.youtubeMusicShuffle && previous >= 0 {
+					m.youtubeMusicShuffleHistory = append(history, previous)
+				}
+			}
+			m.youtubeMusicShuffleBack = false
 			m.youtubeMusicPlayingIndex = msg.trackIndex
 			m.youtubeMusicPlayingVideoID = msg.videoID
-			m.youtubeMusicTrackSelected = msg.trackIndex
+			if m.browsingQueue() {
+				m.youtubeMusicTrackSelected = msg.trackIndex
+			}
 			m.youtubeMusicPlayback = m.youtubeMusicPlayer.Snapshot()
 			m.syncMusicSpectrum()
 			commands := []tea.Cmd{applyYouTubeMusicPreferences(
@@ -709,7 +714,6 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			m.paletteSelected = 0
 		case "ctrl+r":
 			if !m.youtubeMusicLoading {
-				m.cancelYouTubeQueue()
 				m.youtubeMusicLoading = true
 				m.youtubeMusicErr = nil
 				return m, readYouTubeMusicLibrary(m.appContext)
@@ -717,8 +721,6 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		case "enter":
 			if m.youtubeMusicView == youtubeMusicLibraryView && !m.youtubeMusicLoading && len(m.youtubeMusicPlaylists) > 0 {
 				selected := m.youtubeMusicPlaylists[m.youtubeMusicPlaylistSelected]
-				m.cancelYouTubeQueue()
-				m.youtubeMusicCacheStatus = youtubeMusicCacheEvent{}
 				m.youtubeMusicLoading = true
 				m.youtubeMusicErr = nil
 				if selected.Local {
@@ -726,7 +728,10 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				}
 				return m, readYouTubeMusicPlaylist(m.appContext, m.youtubeMusicClient, selected.ID)
 			}
-			if m.youtubeMusicView == youtubeMusicPlaylistView {
+			if m.youtubeMusicView == youtubeMusicPlaylistView && !m.youtubeMusicResolving {
+				if !m.browsingQueue() {
+					m.queueBrowsedPlaylist()
+				}
 				return m, m.requestYouTubeTrack(m.youtubeMusicTrackSelected)
 			}
 		case "up":
@@ -747,15 +752,19 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			}
 		case "right":
 			if m.youtubeMusicPlayer != nil {
-				next := loopingPlaylistTrackIndex(m.youtubeMusicPlaylist.Tracks, m.youtubeMusicPlayingIndex+1, 1)
+				next := loopingPlaylistTrackIndex(m.youtubeMusicQueue.Tracks, m.youtubeMusicPlayingIndex+1, 1)
 				if m.youtubeMusicShuffle {
-					next = shuffleTrackIndex(m.youtubeMusicPlaylist.Tracks, m.youtubeMusicPlayingIndex)
+					next = shuffleTrackIndex(m.youtubeMusicQueue.Tracks, m.youtubeMusicPlayingIndex)
 				}
 				return m, m.requestYouTubeTrack(next)
 			}
 		case "left":
 			if m.youtubeMusicPlayer != nil {
-				previous := loopingPlaylistTrackIndex(m.youtubeMusicPlaylist.Tracks, m.youtubeMusicPlayingIndex-1, -1)
+				previous := loopingPlaylistTrackIndex(m.youtubeMusicQueue.Tracks, m.youtubeMusicPlayingIndex-1, -1)
+				if count := len(m.youtubeMusicShuffleHistory); m.youtubeMusicShuffle && count > 0 {
+					previous = m.youtubeMusicShuffleHistory[count-1]
+					m.youtubeMusicShuffleBack = true
+				}
 				return m, m.requestYouTubeTrack(previous)
 			}
 		case "backspace":
@@ -821,7 +830,8 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				m.beginYouTubeMusicDelete(youtubeMusicDeletePlaylist)
 			}
 		case "l", "L":
-			if m.youtubeMusicView == youtubeMusicPlaylistView &&
+			// Loop marks a queue position, so it applies only while browsing the queue.
+			if m.youtubeMusicView == youtubeMusicPlaylistView && m.browsingQueue() &&
 				m.youtubeMusicTrackSelected >= 0 && m.youtubeMusicTrackSelected < len(m.youtubeMusicPlaylist.Tracks) {
 				selected := m.youtubeMusicTrackSelected
 				track := m.youtubeMusicPlaylist.Tracks[selected]

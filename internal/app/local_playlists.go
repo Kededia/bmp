@@ -160,11 +160,15 @@ func (m *Model) addCachedTrack(track musiccache.LocalTrack) {
 // addTrack appends, so existing track indices stay valid and a running cache
 // queue can keep downloading and start its pending track.
 func (m *Model) addTrack(track youtubemusic.Track) {
+	queued := m.browsingQueue()
 	m.makeCurrentPlaylistLocal()
 	m.youtubeMusicPlaylist.Tracks = append(m.youtubeMusicPlaylist.Tracks, track)
 	m.youtubeMusicPlaylist.TrackCount = len(m.youtubeMusicPlaylist.Tracks)
 	m.saveCurrentLocalPlaylist()
 	m.youtubeMusicTrackSelected = len(m.youtubeMusicPlaylist.Tracks) - 1
+	if queued {
+		m.syncQueue()
+	}
 }
 
 func (m *Model) removeSelectedTrack() {
@@ -172,28 +176,44 @@ func (m *Model) removeSelectedTrack() {
 	if index < 0 || index >= len(m.youtubeMusicPlaylist.Tracks) {
 		return
 	}
+	queued := m.browsingQueue()
 	state := m.youtubeMusicPlayback.State
-	if m.youtubeMusicPlaylist.Tracks[index].VideoID == m.youtubeMusicPlayingVideoID &&
+	if queued && index == m.youtubeMusicPlayingIndex &&
 		state != playback.StateEnded && state != playback.StateStopped && state != playback.StateError {
 		m.youtubeMusicPlaybackErr = errors.New("change tracks before removing the playing song")
 		return
 	}
-	m.cancelYouTubeQueue()
 	m.makeCurrentPlaylistLocal()
 	m.youtubeMusicPlaylist.Tracks = append(
 		m.youtubeMusicPlaylist.Tracks[:index], m.youtubeMusicPlaylist.Tracks[index+1:]...,
 	)
 	m.youtubeMusicPlaylist.TrackCount = len(m.youtubeMusicPlaylist.Tracks)
+	m.youtubeMusicTrackSelected = min(index, max(0, len(m.youtubeMusicPlaylist.Tracks)-1))
+	m.saveCurrentLocalPlaylist()
+	if !queued {
+		return
+	}
+	// Queue positions after index shift, so the running downloads and the
+	// shuffle history no longer match.
+	m.cancelYouTubeQueue()
+	m.youtubeMusicShuffleHistory = nil
 	if index < m.youtubeMusicPlayingIndex {
 		m.youtubeMusicPlayingIndex--
+	} else if index == m.youtubeMusicPlayingIndex {
+		m.youtubeMusicPlayingIndex = -1
 	}
 	if index < m.youtubeMusicLoopTrackIndex {
 		m.youtubeMusicLoopTrackIndex--
 	} else if index == m.youtubeMusicLoopTrackIndex {
 		m.youtubeMusicLoopTrackIndex = -1
 	}
-	m.youtubeMusicTrackSelected = min(index, max(0, len(m.youtubeMusicPlaylist.Tracks)-1))
-	m.saveCurrentLocalPlaylist()
+	m.syncQueue()
+}
+
+// syncQueue copies an edit of the open playlist into the queue it shows.
+func (m *Model) syncQueue() {
+	m.youtubeMusicQueue = m.youtubeMusicPlaylist
+	m.youtubeMusicQueue.Tracks = append([]youtubemusic.Track(nil), m.youtubeMusicPlaylist.Tracks...)
 }
 
 func (m *Model) beginYouTubeMusicDelete(target youtubeMusicDeleteTarget) {
@@ -256,13 +276,16 @@ func (m *Model) confirmYouTubeMusicDelete() tea.Cmd {
 	m.youtubeMusicPlaylists = removeLocalPlaylist(m.youtubeMusicPlaylists, playlist.ID)
 	m.youtubeMusicPlaylistSelected = min(m.youtubeMusicPlaylistSelected, max(0, len(m.youtubeMusicPlaylists)-1))
 	m.youtubeMusicDeleteStatus = "Deleted playlist"
-	if m.youtubeMusicPlaylist.ID != playlist.ID {
+	if m.youtubeMusicPlaylist.ID == playlist.ID {
+		m.youtubeMusicPlaylist = youtubemusic.Playlist{}
+		m.youtubeMusicTrackSelected = 0
+	}
+	if m.youtubeMusicQueue.ID != playlist.ID {
 		return nil
 	}
 	m.cancelYouTubeQueue()
-	m.youtubeMusicPlaylist = youtubemusic.Playlist{}
-	m.youtubeMusicView = youtubeMusicLibraryView
-	m.youtubeMusicTrackSelected = 0
+	m.youtubeMusicQueue = youtubemusic.Playlist{}
+	m.youtubeMusicShuffleHistory = nil
 	m.youtubeMusicPlayingIndex = -1
 	m.youtubeMusicPlayingVideoID = ""
 	m.youtubeMusicLoopTrackIndex = -1

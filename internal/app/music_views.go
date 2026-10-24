@@ -183,13 +183,14 @@ func (m Model) youtubeMusicPlaylistViewContent(header string, innerWidth, height
 		return strings.Join(append(lines, muted.Render("This playlist has no available tracks.")), "\n")
 	}
 	selectedIndex := min(max(0, m.youtubeMusicTrackSelected), len(playlist.Tracks)-1)
+	queued := m.browsingQueue()
 	visibleRows := max(1, height-lipgloss.Height(strings.Join(lines, "\n"))-3)
 	start, end := m.selectionWindow(trackScroll, len(playlist.Tracks), selectedIndex, visibleRows)
 	for index := start; index < end; index++ {
 		track := playlist.Tracks[index]
 		selected := index == selectedIndex
 		cursor := "  "
-		if index == m.youtubeMusicPlayingIndex {
+		if queued && index == m.youtubeMusicPlayingIndex {
 			symbol := "▶ "
 			color := m.colors.Green
 			if m.youtubeMusicPlayback.State == playback.StatePaused {
@@ -228,7 +229,7 @@ func (m Model) youtubeMusicPlaylistViewContent(header string, innerWidth, height
 			}
 			details += "LOCAL"
 		}
-		if index == m.youtubeMusicLoopTrackIndex {
+		if queued && index == m.youtubeMusicLoopTrackIndex {
 			if details != "" {
 				details += "  ·  "
 			}
@@ -258,8 +259,8 @@ func (m Model) youtubeMusicCacheStatusView(width int) string {
 	}
 	position := fmt.Sprintf("%d/%d", status.queuePosition, status.queueTotal)
 	track := ""
-	if status.trackIndex >= 0 && status.trackIndex < len(m.youtubeMusicPlaylist.Tracks) {
-		track = m.youtubeMusicPlaylist.Tracks[status.trackIndex].Title
+	if status.trackIndex >= 0 && status.trackIndex < len(m.youtubeMusicQueue.Tracks) {
+		track = m.youtubeMusicQueue.Tracks[status.trackIndex].Title
 	}
 	label := strings.ToUpper(string(status.phase))
 	color := m.colors.Yellow

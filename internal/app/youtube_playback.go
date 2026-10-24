@@ -169,10 +169,13 @@ func cacheYouTubeMusicQueue(
 
 func playCachedYouTubeMusicTrack(
 	parent context.Context,
+	generation int,
 	player playback.Player,
 	track youtubemusic.Track,
 	trackIndex int,
 	path string,
+	start time.Duration,
+	paused bool,
 ) tea.Cmd {
 	return func() tea.Msg {
 		var err error
@@ -180,21 +183,21 @@ func playCachedYouTubeMusicTrack(
 		if player == nil {
 			player, err = playback.New()
 			if err != nil {
-				return youtubeMusicPlaybackMsg{trackIndex: trackIndex, videoID: track.VideoID, err: fmt.Errorf("create audio player: %w", err)}
+				return youtubeMusicPlaybackMsg{generation: generation, trackIndex: trackIndex, videoID: track.VideoID, err: fmt.Errorf("create audio player: %w", err)}
 			}
 			created = true
 		}
 		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 		defer cancel()
 		source := playback.Source{Path: path, Title: track.Title, Artist: trackArtistNames(track.Artists), Duration: track.Duration}
-		if err := player.Play(ctx, source); err != nil {
+		if err := player.Play(ctx, source, start, paused); err != nil {
 			if created {
 				_ = player.Close()
 				player = nil
 			}
-			return youtubeMusicPlaybackMsg{player: player, trackIndex: trackIndex, videoID: track.VideoID, err: err}
+			return youtubeMusicPlaybackMsg{generation: generation, player: player, trackIndex: trackIndex, videoID: track.VideoID, err: err}
 		}
-		return youtubeMusicPlaybackMsg{player: player, trackIndex: trackIndex, videoID: track.VideoID}
+		return youtubeMusicPlaybackMsg{generation: generation, player: player, trackIndex: trackIndex, videoID: track.VideoID}
 	}
 }
 
@@ -204,6 +207,9 @@ func playCachedYouTubeMusicTrack(
 func (m *Model) recoverMusicAfterSleep() tea.Cmd {
 	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 	m.cancelYouTubeQueue()
+	// Abandon any play still in flight on the old session.
+	m.youtubeMusicPlayGeneration++
+	m.youtubeMusicResolving = false
 	player := m.youtubeMusicPlayer
 	if player == nil {
 		return nil
@@ -218,7 +224,7 @@ func (m *Model) recoverMusicAfterSleep() tea.Cmd {
 		return nil
 	}
 	index := m.youtubeMusicPlayingIndex
-	if index < 0 || index >= len(m.youtubeMusicPlaylist.Tracks) || snapshot.State == playback.StateEnded ||
+	if index < 0 || index >= len(m.youtubeMusicQueue.Tracks) || snapshot.State == playback.StateEnded ||
 		snapshot.State == playback.StateStopped || snapshot.State == playback.StateIdle {
 		m.youtubeMusicPlayback = playback.Snapshot{State: playback.StateStopped, Volume: snapshot.Volume, Muted: snapshot.Muted}
 		return closePlayer
@@ -230,10 +236,10 @@ func (m *Model) recoverMusicAfterSleep() tea.Cmd {
 }
 
 func (m *Model) requestYouTubeTrack(index int) tea.Cmd {
-	if index < 0 || index >= len(m.youtubeMusicPlaylist.Tracks) || m.youtubeMusicResolving {
+	if index < 0 || index >= len(m.youtubeMusicQueue.Tracks) || m.youtubeMusicResolving {
 		return nil
 	}
-	track := m.youtubeMusicPlaylist.Tracks[index]
+	track := m.youtubeMusicQueue.Tracks[index]
 	if !track.Available || strings.TrimSpace(track.VideoID) == "" {
 		m.youtubeMusicPlaybackErr = youtubemusic.ErrUnavailable
 		return nil
@@ -251,14 +257,62 @@ func (m *Model) requestYouTubeTrack(index int) tea.Cmd {
 }
 
 func (m *Model) beginCachedYouTubeTrack(index int, path string) tea.Cmd {
-	if index < 0 || index >= len(m.youtubeMusicPlaylist.Tracks) || path == "" {
+	if index < 0 || index >= len(m.youtubeMusicQueue.Tracks) || path == "" {
 		return nil
+	}
+	start, paused := time.Duration(0), false
+	if index == m.musicRestoreTrackIndex {
+		start, paused = m.musicRestorePosition, m.musicRestorePaused
+		m.musicRestoreTrackIndex, m.musicRestorePosition, m.musicRestorePaused = -1, 0, false
 	}
 	m.youtubeMusicResolving = true
 	m.youtubeMusicPendingIndex = -1
 	m.youtubeMusicPlaybackErr = nil
 	m.youtubeMusicPlayback.State = playback.StateOpening
-	return playCachedYouTubeMusicTrack(m.appContext, m.youtubeMusicPlayer, m.youtubeMusicPlaylist.Tracks[index], index, path)
+	m.youtubeMusicPlayGeneration++
+	return playCachedYouTubeMusicTrack(
+		m.appContext, m.youtubeMusicPlayGeneration, m.youtubeMusicPlayer, m.youtubeMusicQueue.Tracks[index], index, path, start, paused,
+	)
+}
+
+// queueBrowsedPlaylist makes the open playlist the one playback runs from.
+// Positions in the previous queue no longer apply.
+func (m *Model) queueBrowsedPlaylist() {
+	m.cancelYouTubeQueue()
+	m.youtubeMusicQueue = m.youtubeMusicPlaylist
+	m.youtubeMusicQueue.Tracks = append([]youtubemusic.Track(nil), m.youtubeMusicPlaylist.Tracks...)
+	m.youtubeMusicPlayingIndex = -1
+	for index, track := range m.youtubeMusicQueue.Tracks {
+		if track.VideoID == m.youtubeMusicPlayingVideoID {
+			m.youtubeMusicPlayingIndex = index
+			break
+		}
+	}
+	m.youtubeMusicLoopTrackIndex = -1
+	m.youtubeMusicShuffleHistory = nil
+	m.musicRestoreTrackIndex = -1
+}
+
+// browsingQueue reports whether the open playlist is the queue, so its rows
+// share the queue's playing, loop and download positions.
+func (m Model) browsingQueue() bool {
+	return m.youtubeMusicQueue.ID != "" && m.youtubeMusicPlaylist.ID == m.youtubeMusicQueue.ID
+}
+
+// refreshPlayback reads the player and, when the track has just ended,
+// returns the command that starts the next one.
+func (m *Model) refreshPlayback() tea.Cmd {
+	previousState := m.youtubeMusicPlayback.State
+	m.youtubeMusicPlayback = m.youtubeMusicPlayer.Snapshot()
+	m.syncMusicSpectrum()
+	if m.youtubeMusicPlayback.Err != nil {
+		m.youtubeMusicPlaybackErr = m.youtubeMusicPlayback.Err
+	}
+	if previousState == playback.StateEnded || m.youtubeMusicPlayback.State != playback.StateEnded || m.youtubeMusicResolving {
+		return nil
+	}
+	next := automaticTrackIndex(m.youtubeMusicQueue.Tracks, m.youtubeMusicPlayingIndex, m.youtubeMusicLoopTrackIndex, m.youtubeMusicShuffle)
+	return m.requestYouTubeTrack(next)
 }
 
 func (m *Model) cancelYouTubeQueue() {
@@ -268,8 +322,13 @@ func (m *Model) cancelYouTubeQueue() {
 	}
 	m.youtubeMusicCacheGeneration++
 	m.youtubeMusicCacheEvents = nil
+	m.youtubeMusicCacheStatus = youtubeMusicCacheEvent{}
+	// Without a pending index, resolving means a cached play is in flight; it
+	// keeps blocking new requests so two plays never race on one player.
+	if m.youtubeMusicPendingIndex >= 0 {
+		m.youtubeMusicResolving = false
+	}
 	m.youtubeMusicPendingIndex = -1
-	m.youtubeMusicResolving = false
 }
 
 func (m *Model) beginYouTubeQueue(index int) tea.Cmd {
@@ -291,9 +350,9 @@ func (m *Model) beginYouTubeQueue(index int) tea.Cmd {
 	m.youtubeMusicResolving = true
 	m.youtubeMusicPlaybackErr = nil
 	m.youtubeMusicCacheStatus = youtubeMusicCacheEvent{
-		generation: generation, phase: musicCacheChecking, trackIndex: index, videoID: m.youtubeMusicPlaylist.Tracks[index].VideoID,
+		generation: generation, phase: musicCacheChecking, trackIndex: index, videoID: m.youtubeMusicQueue.Tracks[index].VideoID,
 	}
-	tracks := append([]youtubemusic.Track(nil), m.youtubeMusicPlaylist.Tracks...)
+	tracks := append([]youtubemusic.Track(nil), m.youtubeMusicQueue.Tracks...)
 	go cacheYouTubeMusicQueue(ctx, generation, m.youtubeMusicClient, m.youtubeMusicCache, tracks, index, events)
 	return waitForYouTubeMusicCacheEvent(generation, events)
 }
@@ -314,25 +373,6 @@ func applyYouTubeMusicPreferences(parent context.Context, player playback.Player
 			}
 		}
 		return youtubeMusicControlMsg{snapshot: player.Snapshot()}
-	}
-}
-
-func restoreYouTubeMusicPosition(parent context.Context, player playback.Player, position time.Duration, paused bool) tea.Cmd {
-	return func() tea.Msg {
-		if player == nil {
-			return youtubeMusicControlMsg{err: errors.New("no active YouTube Music playback")}
-		}
-		ctx, cancel := context.WithTimeout(parent, 3*time.Second)
-		defer cancel()
-		if err := player.Seek(ctx, position); err != nil {
-			return youtubeMusicControlMsg{snapshot: player.Snapshot(), err: err}
-		}
-		if paused && player.Snapshot().State != playback.StatePaused {
-			if err := player.Toggle(ctx); err != nil {
-				return youtubeMusicControlMsg{snapshot: player.Snapshot(), err: err}
-			}
-		}
-		return youtubeMusicControlMsg{snapshot: player.Snapshot(), seeked: true}
 	}
 }
 

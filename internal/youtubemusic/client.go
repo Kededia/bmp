@@ -51,6 +51,10 @@ func NewFromEnvironmentContext(ctx context.Context) (*Client, error) {
 	cookies := strings.TrimSpace(os.Getenv("YTMUSIC_COOKIES"))
 	if browser := strings.TrimSpace(os.Getenv("YTMUSIC_BROWSER")); browser != "" {
 		exported, err := auth.CookiesFromBrowser(ctx, browser)
+		err = retryAfterUpdate(ctx, err, func() error {
+			exported, err = auth.CookiesFromBrowser(ctx, browser)
+			return err
+		})
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrAuthentication, err)
 		}
@@ -197,6 +201,10 @@ func (client *Client) ResolveStream(ctx context.Context, videoID string) (stream
 		return streamresolver.Result{}, errors.New("YouTube Music stream resolver is not configured")
 	}
 	resolved, err := client.resolver.Resolve(ctx, videoID)
+	err = retryAfterUpdate(ctx, err, func() error {
+		resolved, err = client.resolver.Resolve(ctx, videoID)
+		return err
+	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return streamresolver.Result{}, err
@@ -208,6 +216,26 @@ func (client *Client) ResolveStream(ctx context.Context, videoID string) (stream
 		return streamresolver.Result{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	return resolved, nil
+}
+
+// retryAfterUpdate retries a failed yt-dlp call once after updating yt-dlp,
+// since YouTube changes regularly break older releases.
+func retryAfterUpdate(ctx context.Context, err error, retry func() error) error {
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	var executionError *exec.Error
+	if errors.As(err, &executionError) {
+		return err
+	}
+	updated, updateErr := streamresolver.UpdateOnce(ctx)
+	if updateErr != nil {
+		return fmt.Errorf("%w (automatic yt-dlp update failed: %v)", err, updateErr)
+	}
+	if !updated {
+		return err
+	}
+	return retry()
 }
 
 func classifyError(err error) error {

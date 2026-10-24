@@ -13,7 +13,7 @@ import (
 
 func TestCacheEventUsesStableVideoID(t *testing.T) {
 	m := Model{
-		youtubeMusicPlaylist:        youtubemusic.Playlist{Tracks: []youtubemusic.Track{{VideoID: "new-video", Available: true}}},
+		youtubeMusicQueue:           youtubemusic.Playlist{Tracks: []youtubemusic.Track{{VideoID: "new-video", Available: true}}},
 		youtubeMusicCached:          make(map[string]string),
 		youtubeMusicCacheGeneration: 7,
 		youtubeMusicPendingIndex:    0,
@@ -43,6 +43,12 @@ func TestRemovingTrackCancelsCacheQueue(t *testing.T) {
 	canceled := false
 	m := Model{
 		youtubeMusicPlaylist: youtubemusic.Playlist{
+			ID:     "local-queue",
+			Local:  true,
+			Tracks: []youtubemusic.Track{{VideoID: "video", Available: true}},
+		},
+		youtubeMusicQueue: youtubemusic.Playlist{
+			ID:     "local-queue",
 			Local:  true,
 			Tracks: []youtubemusic.Track{{VideoID: "video", Available: true}},
 		},
@@ -134,11 +140,13 @@ type recordingPlayer struct {
 	setVolumeCalls int
 }
 
-func (player *recordingPlayer) Play(context.Context, playback.Source) error { return nil }
-func (player *recordingPlayer) Toggle(context.Context) error                { return nil }
-func (player *recordingPlayer) Stop(context.Context) error                  { return nil }
-func (player *recordingPlayer) Seek(context.Context, time.Duration) error   { return nil }
-func (player *recordingPlayer) ToggleMute(context.Context) error            { return nil }
+func (player *recordingPlayer) Play(context.Context, playback.Source, time.Duration, bool) error {
+	return nil
+}
+func (player *recordingPlayer) Toggle(context.Context) error              { return nil }
+func (player *recordingPlayer) Stop(context.Context) error                { return nil }
+func (player *recordingPlayer) Seek(context.Context, time.Duration) error { return nil }
+func (player *recordingPlayer) ToggleMute(context.Context) error          { return nil }
 func (player *recordingPlayer) SetVolume(_ context.Context, volume int) error {
 	player.setVolumeCalls++
 	player.snapshot.Volume = volume

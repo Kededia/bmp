@@ -26,13 +26,10 @@ const (
 
 // Source describes one resolved audio item.
 type Source struct {
-	Path        string
-	URL         string
-	HTTPHeaders map[string]string
-	Container   string
-	Title       string
-	Artist      string
-	Duration    time.Duration
+	Path     string
+	Title    string
+	Artist   string
+	Duration time.Duration
 }
 
 // Snapshot is a concurrency-safe view of the current player state.
@@ -48,7 +45,9 @@ type Snapshot struct {
 
 // Player controls one local audio output session.
 type Player interface {
-	Play(ctx context.Context, source Source) error
+	// Play opens source at start, left paused there when paused is set. A
+	// non-zero start or a paused open is silent until it takes effect.
+	Play(ctx context.Context, source Source, start time.Duration, paused bool) error
 	Toggle(ctx context.Context) error
 	Stop(ctx context.Context) error
 	Seek(ctx context.Context, position time.Duration) error

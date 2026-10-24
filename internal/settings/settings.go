@@ -25,7 +25,7 @@ type MusicState struct {
 	TrackIndex     int    `json:"track_index"`
 	PositionMillis int64  `json:"position_ms,omitempty"`
 	Paused         bool   `json:"paused,omitempty"`
-	LoopTrackIndex int    `json:"loop_track_index,omitempty"`
+	LoopTrackIndex int    `json:"loop_track_index"`
 }
 
 func defaultState() State {

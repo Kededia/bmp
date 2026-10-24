@@ -25,11 +25,11 @@ func (m *Model) captureSettings() {
 		snapshot := m.youtubeMusicPlayer.Snapshot()
 		m.persistedSettings.Volume = snapshot.Volume
 		m.persistedSettings.Muted = snapshot.Muted
-		if m.youtubeMusicPlayingIndex >= 0 && m.youtubeMusicPlayingIndex < len(m.youtubeMusicPlaylist.Tracks) {
-			track := m.youtubeMusicPlaylist.Tracks[m.youtubeMusicPlayingIndex]
+		if m.youtubeMusicPlayingIndex >= 0 && m.youtubeMusicPlayingIndex < len(m.youtubeMusicQueue.Tracks) {
+			track := m.youtubeMusicQueue.Tracks[m.youtubeMusicPlayingIndex]
 			m.persistedSettings.Music = settings.MusicState{
 				Valid:          true,
-				PlaylistID:     m.youtubeMusicPlaylist.ID,
+				PlaylistID:     m.youtubeMusicQueue.ID,
 				VideoID:        track.VideoID,
 				TrackIndex:     m.youtubeMusicPlayingIndex,
 				PositionMillis: snapshot.Position.Milliseconds(),
@@ -57,19 +57,6 @@ func (m *Model) settingsSaveCommand(now time.Time) tea.Cmd {
 	m.captureSettings()
 	m.settingsSaving = true
 	return saveSettings(m.persistedSettings, m.settingsGeneration)
-}
-
-func (m *Model) restoreMusicPositionCommand() tea.Cmd {
-	if m.musicRestoreTrackIndex < 0 || m.youtubeMusicPlayingIndex != m.musicRestoreTrackIndex ||
-		m.youtubeMusicPlayback.State != playback.StatePlaying {
-		return nil
-	}
-	position := m.musicRestorePosition
-	paused := m.musicRestorePaused
-	m.musicRestoreTrackIndex = -1
-	m.musicRestorePosition = 0
-	m.musicRestorePaused = false
-	return restoreYouTubeMusicPosition(m.appContext, m.youtubeMusicPlayer, position, paused)
 }
 
 func (m *Model) saveSettingsNow() {

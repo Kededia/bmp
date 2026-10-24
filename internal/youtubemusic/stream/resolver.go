@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -64,6 +65,7 @@ func (resolver *YTDLPResolver) Resolve(ctx context.Context, videoID string) (res
 	}
 
 	command := exec.CommandContext(ctx, "yt-dlp",
+		"--ignore-config",
 		"--dump-single-json",
 		"--no-playlist",
 		"--no-warnings",
@@ -89,6 +91,46 @@ func (resolver *YTDLPResolver) Resolve(ctx context.Context, videoID string) (res
 		return Result{}, fmt.Errorf("run yt-dlp: %w", err)
 	}
 	return parseOutput(output)
+}
+
+var update struct {
+	sync.Mutex
+	tried bool
+}
+
+// UpdateOnce runs yt-dlp's self-updater the first time it is called and
+// reports whether that changed the installed version. Later calls do nothing,
+// so a session never spends more than one update on failing requests.
+func UpdateOnce(ctx context.Context) (bool, error) {
+	update.Lock()
+	defer update.Unlock()
+	if update.tried {
+		return false, nil
+	}
+	update.tried = true
+	before, err := version(ctx)
+	if err != nil {
+		return false, err
+	}
+	if output, err := exec.CommandContext(ctx, "yt-dlp", "--ignore-config", "-U").CombinedOutput(); err != nil {
+		if message := strings.TrimSpace(string(output)); message != "" {
+			return false, fmt.Errorf("update yt-dlp: %s", sanitize(message))
+		}
+		return false, fmt.Errorf("update yt-dlp: %w", err)
+	}
+	after, err := version(ctx)
+	if err != nil {
+		return false, err
+	}
+	return after != before, nil
+}
+
+func version(ctx context.Context) (string, error) {
+	output, err := exec.CommandContext(ctx, "yt-dlp", "--version").Output()
+	if err != nil {
+		return "", fmt.Errorf("read yt-dlp version: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func parseOutput(output []byte) (Result, error) {
