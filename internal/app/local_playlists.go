@@ -147,41 +147,48 @@ func fuzzyLocalTrackMatch(value, query string) bool {
 	return true
 }
 
-func (m *Model) addCachedTrack(track musiccache.LocalTrack) {
+func (m *Model) addCachedTrack(track musiccache.LocalTrack) tea.Cmd {
 	artists := []youtubemusic.Artist(nil)
 	if track.Artist != "" {
 		artists = []youtubemusic.Artist{{Name: track.Artist}}
 	}
-	m.addTrack(youtubemusic.Track{
+	return m.addTrack(youtubemusic.Track{
 		VideoID: track.VideoID, Title: track.Title, Artists: artists, Available: true,
 	})
 }
 
-// addTrack appends, so existing track indices stay valid and a running cache
-// queue can keep downloading and start its pending track.
-func (m *Model) addTrack(track youtubemusic.Track) {
+// addTrack appends, so existing track indices stay valid and a running
+// download can keep going and start its pending track.
+func (m *Model) addTrack(track youtubemusic.Track) tea.Cmd {
 	queued := m.browsingQueue()
 	m.makeCurrentPlaylistLocal()
 	m.youtubeMusicPlaylist.Tracks = append(m.youtubeMusicPlaylist.Tracks, track)
 	m.youtubeMusicPlaylist.TrackCount = len(m.youtubeMusicPlaylist.Tracks)
 	m.saveCurrentLocalPlaylist()
 	m.youtubeMusicTrackSelected = len(m.youtubeMusicPlaylist.Tracks) - 1
-	if queued {
-		m.syncQueue()
+	if !queued {
+		return nil
 	}
+	m.syncQueue()
+	if m.youtubeMusicShuffle {
+		// Keep the random pick that is already downloaded.
+		return nil
+	}
+	// The new track becomes next when the last one is playing.
+	return m.prefetchNextTrack()
 }
 
-func (m *Model) removeSelectedTrack() {
+func (m *Model) removeSelectedTrack() tea.Cmd {
 	index := m.youtubeMusicTrackSelected
 	if index < 0 || index >= len(m.youtubeMusicPlaylist.Tracks) {
-		return
+		return nil
 	}
 	queued := m.browsingQueue()
 	state := m.youtubeMusicPlayback.State
 	if queued && index == m.youtubeMusicPlayingIndex &&
 		state != playback.StateEnded && state != playback.StateStopped && state != playback.StateError {
 		m.youtubeMusicPlaybackErr = errors.New("change tracks before removing the playing song")
-		return
+		return nil
 	}
 	m.makeCurrentPlaylistLocal()
 	m.youtubeMusicPlaylist.Tracks = append(
@@ -191,12 +198,13 @@ func (m *Model) removeSelectedTrack() {
 	m.youtubeMusicTrackSelected = min(index, max(0, len(m.youtubeMusicPlaylist.Tracks)-1))
 	m.saveCurrentLocalPlaylist()
 	if !queued {
-		return
+		return nil
 	}
-	// Queue positions after index shift, so the running downloads and the
-	// shuffle history no longer match.
+	// Queue positions after index shift, so the running download, the
+	// shuffle history and the failed tracks no longer match.
 	m.cancelYouTubeQueue()
 	m.youtubeMusicShuffleHistory = nil
+	m.youtubeMusicFailed = nil
 	if index < m.youtubeMusicPlayingIndex {
 		m.youtubeMusicPlayingIndex--
 	} else if index == m.youtubeMusicPlayingIndex {
@@ -208,6 +216,7 @@ func (m *Model) removeSelectedTrack() {
 		m.youtubeMusicLoopTrackIndex = -1
 	}
 	m.syncQueue()
+	return m.prefetchNextTrack()
 }
 
 // syncQueue copies an edit of the open playlist into the queue it shows.
@@ -251,11 +260,11 @@ func (m *Model) confirmYouTubeMusicDelete() tea.Cmd {
 	m.youtubeMusicDeleteStatus = ""
 	m.youtubeMusicDeleteStatusError = false
 	if target == youtubeMusicDeleteTrack {
-		m.removeSelectedTrack()
+		command := m.removeSelectedTrack()
 		if m.youtubeMusicPlaybackErr == nil {
 			m.youtubeMusicDeleteStatus = "Removed track"
 		}
-		return nil
+		return command
 	}
 	if target != youtubeMusicDeletePlaylist || m.youtubeMusicPlaylistSelected < 0 || m.youtubeMusicPlaylistSelected >= len(m.youtubeMusicPlaylists) {
 		return nil

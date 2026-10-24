@@ -70,10 +70,10 @@ func (resolver *YTDLPResolver) Resolve(ctx context.Context, videoID string) (res
 		"--no-playlist",
 		"--no-warnings",
 		"--js-runtimes", "node",
-		// Legacy Windows Media Player cannot decode YouTube's fragmented
-		// audio-only M4A representation reliably. Prefer a progressive MP4
-		// containing AAC audio, with audio-only formats as a fallback.
-		"--format", "best[ext=mp4][height<=360]/bestaudio[ext=m4a]/bestaudio/best",
+		// ffmpeg plays any codec, so take the best audio-only stream: Opus at
+		// about 256 kbps with YouTube Music Premium. Dynamic-range-compressed
+		// variants are a last resort.
+		"--format", "bestaudio[format_id!*=drc]/bestaudio/best",
 		"--cookies", cookiePath,
 		"https://music.youtube.com/watch?v="+videoID,
 	)

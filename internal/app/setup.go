@@ -137,6 +137,7 @@ func (m *Model) finishSetup() tea.Cmd {
 		m.cancelYouTubeQueue()
 		m.youtubeMusicCache, m.youtubeMusicCacheErr = cache, nil
 		m.youtubeMusicCached = make(map[string]string)
+		m.youtubeMusicCacheSize = -1
 		m.persistedSettings.MusicDir = folder
 	}
 	m.persistedSettings.Browser = m.setupBrowser
@@ -146,7 +147,7 @@ func (m *Model) finishSetup() tea.Cmd {
 	m.setupFolder.Blur()
 	m.youtubeMusicLoading = true
 	m.youtubeMusicErr = nil
-	return readYouTubeMusicLibrary(m.appContext, m.persistedSettings.Browser)
+	return tea.Batch(readYouTubeMusicLibrary(m.appContext, m.persistedSettings.Browser), readMusicCacheSize(m.youtubeMusicCache))
 }
 
 func (m Model) setupView() string {

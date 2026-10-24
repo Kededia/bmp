@@ -1,6 +1,6 @@
 //go:build !windows
 
-package spectrum
+package playback
 
 import "os/exec"
 

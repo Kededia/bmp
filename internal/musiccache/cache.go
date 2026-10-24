@@ -91,6 +91,7 @@ func (cache *Cache) Tracks() ([]LocalTrack, error) {
 		return nil, err
 	}
 	tracks := make([]LocalTrack, 0, len(entries))
+	positions := make(map[string]int, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || strings.HasSuffix(entry.Name(), ".part") {
 			continue
@@ -106,13 +107,40 @@ func (cache *Cache) Tracks() ([]LocalTrack, error) {
 		if before, after, found := strings.Cut(display, " - "); found {
 			artist, title = before, after
 		}
-		tracks = append(tracks, LocalTrack{
+		track := LocalTrack{
 			VideoID: videoID, Title: title, Artist: artist,
 			Path: filepath.Join(cache.directory, entry.Name()),
-		})
+		}
+		// An upgraded song can briefly sit beside its old file; list it once.
+		if position, seen := positions[videoID]; seen {
+			if Legacy(tracks[position].Path) && !Legacy(track.Path) {
+				tracks[position] = track
+			}
+			continue
+		}
+		positions[videoID] = len(tracks)
+		tracks = append(tracks, track)
 	}
 	sort.Slice(tracks, func(i, j int) bool { return tracks[i].Title < tracks[j].Title })
 	return tracks, nil
+}
+
+// Size returns the total size of the finished tracks in the cache.
+func (cache *Cache) Size() (int64, error) {
+	entries, err := os.ReadDir(cache.directory)
+	if err != nil {
+		return 0, fmt.Errorf("read music cache: %w", err)
+	}
+	var total int64
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasSuffix(entry.Name(), ".part") {
+			continue
+		}
+		if info, err := entry.Info(); err == nil {
+			total += info.Size()
+		}
+	}
+	return total, nil
 }
 
 // Lookup finds any completed file carrying videoID, independently of title or
@@ -161,10 +189,28 @@ func (cache *Cache) scan() error {
 		if start < 0 || !strings.HasSuffix(name, "]") || start+2 >= len(name)-1 {
 			continue
 		}
-		index[name[start+2:len(name)-1]] = filepath.Join(cache.directory, entry.Name())
+		videoID, path := name[start+2:len(name)-1], filepath.Join(cache.directory, entry.Name())
+		if existing, seen := index[videoID]; seen {
+			// Keep the upgraded file and remove an old one left behind while
+			// it was playing.
+			if Legacy(path) {
+				_ = os.Remove(path)
+				continue
+			}
+			if Legacy(existing) {
+				_ = os.Remove(existing)
+			}
+		}
+		index[videoID] = path
 	}
 	cache.index = index
 	return nil
+}
+
+// Legacy reports whether path is a song stored in BMP's old 360p video format,
+// which is replaced by the best audio-only stream when it comes up to play.
+func Legacy(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".mp4")
 }
 
 // Store downloads a stream atomically into the flat cache. Existing files for
@@ -175,10 +221,13 @@ func (cache *Cache) Store(
 	headers map[string]string,
 	progress func(Progress),
 ) (path string, returnErr error) {
-	if existing, found, err := cache.Lookup(videoID); err != nil {
+	// An old 360p file is downloaded again and replaced.
+	previous, found, err := cache.Lookup(videoID)
+	if err != nil {
 		return "", err
-	} else if found {
-		return existing, nil
+	}
+	if found && !Legacy(previous) {
+		return previous, nil
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -245,7 +294,7 @@ func (cache *Cache) Store(
 	}
 	if existing, found, err := cache.Lookup(videoID); err != nil {
 		return "", err
-	} else if found {
+	} else if found && !Legacy(existing) {
 		_ = os.Remove(partial)
 		return existing, nil
 	}
@@ -257,6 +306,10 @@ func (cache *Cache) Store(
 		cache.index[videoID] = path
 	}
 	cache.mu.Unlock()
+	if found && previous != path {
+		// This fails while the old file is playing; the next scan removes it.
+		_ = os.Remove(previous)
+	}
 	if progress != nil {
 		progress(Progress{Downloaded: written, Total: response.ContentLength})
 	}
@@ -302,7 +355,7 @@ func safeExtension(extension string) string {
 	if extension == "" || strings.IndexFunc(extension, func(r rune) bool {
 		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
 	}) >= 0 {
-		return "mp4"
+		return "m4a"
 	}
 	return extension
 }

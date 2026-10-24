@@ -7,10 +7,10 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/charmbracelet/x/ansi v0.11.6
-	github.com/go-ole/go-ole v1.2.6
+	github.com/ebitengine/oto/v3 v3.5.1
 	github.com/joho/godotenv v1.5.1
 	go.etcd.io/bbolt v1.5.0
-	golang.org/x/sys v0.45.0
+	golang.org/x/sys v0.47.0
 )
 
 require (
@@ -22,7 +22,9 @@ require (
 	github.com/clipperhouse/displaywidth v0.9.0 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.5.0 // indirect
+	github.com/ebitengine/purego v0.11.0 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
+	github.com/jfreymuth/pulse v0.1.3 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect

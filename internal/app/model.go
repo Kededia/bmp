@@ -46,7 +46,6 @@ type youtubeMusicPlaybackMsg struct {
 
 type youtubeMusicControlMsg struct {
 	snapshot playback.Snapshot
-	seeked   bool
 	err      error
 }
 
@@ -139,11 +138,16 @@ type Model struct {
 	youtubeMusicCacheGeneration   int
 	youtubeMusicCacheStatus       youtubeMusicCacheEvent
 	youtubeMusicPendingIndex      int
+	youtubeMusicDownloadIndex     int
+	youtubeMusicNextIndex         int
+	youtubeMusicFailed            map[int]bool
+	youtubeMusicSkipDownload      map[string]bool
+	youtubeMusicCacheStatusNow    bool
+	youtubeMusicCacheSize         int64
 	youtubeMusicStore             *musicstore.Store
 	youtubeMusicStoreErr          error
 	youtubeMusicPlayCounts        map[string]uint64
 	spectrumAnalyzer              *spectrum.Analyzer
-	spectrumErr                   error
 	spectrumTicking               bool
 	persistedSettings             settings.State
 	settingsErr                   error
@@ -215,7 +219,7 @@ func New() Model {
 			}
 		}
 	}
-	spectrumAnalyzer, spectrumError := spectrum.New()
+	spectrumAnalyzer := spectrum.New()
 	appContext, appCancel := context.WithCancel(context.Background())
 	m := Model{
 		appContext:                 appContext,
@@ -234,11 +238,13 @@ func New() Model {
 		youtubeMusicCacheErr:       musicCacheError,
 		youtubeMusicCached:         make(map[string]string),
 		youtubeMusicPendingIndex:   -1,
+		youtubeMusicDownloadIndex:  -1,
+		youtubeMusicNextIndex:      -1,
+		youtubeMusicCacheSize:      -1,
 		youtubeMusicStore:          musicStore,
 		youtubeMusicStoreErr:       musicStoreError,
 		youtubeMusicPlayCounts:     make(map[string]uint64),
 		spectrumAnalyzer:           spectrumAnalyzer,
-		spectrumErr:                spectrumError,
 		listScroll:                 make(map[string]int),
 		youtubeMusicURLInput:       musicURLInput,
 		youtubeMusicLocalSearch:    localSearchInput,
@@ -265,9 +271,6 @@ func (m Model) Close() {
 	if m.youtubeMusicStore != nil {
 		_ = m.youtubeMusicStore.Close()
 	}
-	if m.spectrumAnalyzer != nil {
-		_ = m.spectrumAnalyzer.Close()
-	}
 	if m.appCancel != nil {
 		m.appCancel()
 	}
@@ -292,7 +295,7 @@ func applyTextInputTheme(input *textinput.Model, colors theme.Theme) {
 }
 
 func (m Model) Init() tea.Cmd {
-	commands := []tea.Cmd{tea.SetWindowTitle(m.terminalTitle), tick()}
+	commands := []tea.Cmd{tea.SetWindowTitle(m.terminalTitle), tick(), readMusicCacheSize(m.youtubeMusicCache)}
 	if !m.setupOpen {
 		commands = append(commands, readYouTubeMusicLibrary(m.appContext, m.persistedSettings.Browser))
 	}
@@ -313,14 +316,6 @@ func spectrumTick() tea.Cmd {
 
 func spectrumRefreshActive(state playback.State) bool {
 	return state == playback.StateOpening || state == playback.StateBuffering || state == playback.StatePlaying
-}
-
-func (m *Model) syncMusicSpectrum() {
-	if m.spectrumAnalyzer == nil {
-		return
-	}
-	snapshot := m.youtubeMusicPlayback
-	m.spectrumAnalyzer.Sync(snapshot.Source.Path, snapshot.State == playback.StatePlaying, snapshot.Position)
 }
 
 func readYouTubeMusicLibrary(parent context.Context, browser string) tea.Cmd {
@@ -534,32 +529,50 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		if msg.generation != m.youtubeMusicCacheGeneration {
 			return m, nil
 		}
-		m.youtubeMusicCacheStatus = msg
-		commands := make([]tea.Cmd, 0, 2)
-		if msg.path != "" && msg.videoID != "" {
-			m.youtubeMusicCached[msg.videoID] = msg.path
-			if msg.trackIndex == m.youtubeMusicPendingIndex && msg.trackIndex >= 0 && msg.trackIndex < len(m.youtubeMusicQueue.Tracks) &&
-				m.youtubeMusicQueue.Tracks[msg.trackIndex].VideoID == msg.videoID {
-				commands = append(commands, m.beginCachedYouTubeTrack(msg.trackIndex, msg.path))
-			}
-		}
-		if msg.err != nil && msg.trackIndex == m.youtubeMusicPendingIndex && msg.trackIndex >= 0 && msg.trackIndex < len(m.youtubeMusicQueue.Tracks) &&
-			m.youtubeMusicQueue.Tracks[msg.trackIndex].VideoID == msg.videoID {
-			m.youtubeMusicPlaybackErr = msg.err
-			m.youtubeMusicPendingIndex = playableTrackIndex(m.youtubeMusicQueue.Tracks, msg.trackIndex+1, 1)
-			m.youtubeMusicResolving = m.youtubeMusicPendingIndex >= 0
-		}
 		if msg.done {
 			m.youtubeMusicCacheEvents = nil
 			m.youtubeMusicCacheCancel = nil
+			m.youtubeMusicDownloadIndex = -1
 			if m.youtubeMusicPendingIndex >= 0 {
 				m.youtubeMusicResolving = false
 				m.youtubeMusicPendingIndex = -1
 			}
-		} else if m.youtubeMusicCacheEvents != nil {
+			if m.youtubeMusicCacheStatus.phase != musicCacheFailed {
+				m.youtubeMusicCacheStatus = youtubeMusicCacheEvent{}
+			}
+			return m, tea.Batch(readMusicCacheSize(m.youtubeMusicCache), m.prefetchTracks())
+		}
+		pending := msg.trackIndex == m.youtubeMusicPendingIndex && msg.trackIndex >= 0 && msg.trackIndex < len(m.youtubeMusicQueue.Tracks) &&
+			m.youtubeMusicQueue.Tracks[msg.trackIndex].VideoID == msg.videoID
+		m.youtubeMusicCacheStatus = msg
+		m.youtubeMusicCacheStatusNow = pending
+		commands := make([]tea.Cmd, 0, 2)
+		if msg.path != "" && msg.videoID != "" {
+			m.youtubeMusicCached[msg.videoID] = msg.path
+			if pending {
+				commands = append(commands, m.beginCachedYouTubeTrack(msg.trackIndex, msg.path))
+			}
+		}
+		if msg.err != nil && !pending {
+			// A failed prefetch is retried only when the track comes up to play.
+			m.skipDownload(msg.videoID)
+		}
+		if msg.err != nil && pending {
+			m.youtubeMusicPlaybackErr = msg.err
+			m.youtubeMusicPendingIndex = -1
+			m.youtubeMusicResolving = false
+			commands = append(commands, m.skipFailedTrack(msg.trackIndex))
+		}
+		// Skipping may have replaced this download; its own waiter is already queued.
+		if msg.generation == m.youtubeMusicCacheGeneration && m.youtubeMusicCacheEvents != nil {
 			commands = append(commands, waitForYouTubeMusicCacheEvent(m.youtubeMusicCacheGeneration, m.youtubeMusicCacheEvents))
 		}
 		return m, tea.Batch(commands...)
+
+	case musicCacheSizeMsg:
+		if msg.err == nil && msg.cache == m.youtubeMusicCache {
+			m.youtubeMusicCacheSize = msg.size
+		}
 
 	case youtubeMusicPlaybackMsg:
 		if msg.generation != m.youtubeMusicPlayGeneration {
@@ -587,13 +600,13 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				}
 			}
 			m.youtubeMusicShuffleBack = false
+			m.youtubeMusicFailed = nil
 			m.youtubeMusicPlayingIndex = msg.trackIndex
 			m.youtubeMusicPlayingVideoID = msg.videoID
 			if m.browsingQueue() {
 				m.youtubeMusicTrackSelected = msg.trackIndex
 			}
 			m.youtubeMusicPlayback = m.youtubeMusicPlayer.Snapshot()
-			m.syncMusicSpectrum()
 			commands := []tea.Cmd{applyYouTubeMusicPreferences(
 				m.appContext, m.youtubeMusicPlayer, m.persistedSettings.Volume, m.persistedSettings.Muted,
 			)}
@@ -608,18 +621,14 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				m.spectrumTicking = true
 				commands = append(commands, spectrumTick())
 			}
+			commands = append(commands, m.prefetchNextTrack())
 			return m, tea.Batch(commands...)
 		}
 
 	case youtubeMusicControlMsg:
 		m.youtubeMusicPlaybackErr = msg.err
 		if msg.err == nil {
-			if msg.seeked && m.spectrumAnalyzer != nil {
-				// The analyzer decodes on its own clock; restart it at the new position.
-				m.spectrumAnalyzer.Sync("", false, 0)
-			}
 			m.youtubeMusicPlayback = msg.snapshot
-			m.syncMusicSpectrum()
 			m.markSettingsDirty()
 		}
 
@@ -630,7 +639,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		m.youtubeMusicURLResolving = false
 		m.youtubeMusicPlaybackErr = msg.err
 		if msg.err == nil && msg.playlistID == m.youtubeMusicPlaylist.ID {
-			m.addTrack(msg.track)
+			return m, m.addTrack(msg.track)
 		}
 
 	case tea.KeyMsg:
@@ -693,10 +702,11 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				m.youtubeMusicLocalSelected = min(max(0, len(filteredTracks)-1), m.youtubeMusicLocalSelected+1)
 			case "enter":
 				if m.youtubeMusicLocalSelected >= 0 && m.youtubeMusicLocalSelected < len(filteredTracks) {
-					m.addCachedTrack(filteredTracks[m.youtubeMusicLocalSelected])
+					command := m.addCachedTrack(filteredTracks[m.youtubeMusicLocalSelected])
 					m.youtubeMusicAddingLocal = false
 					m.youtubeMusicLocalSearching = false
 					m.youtubeMusicLocalSearch.Blur()
+					return m, command
 				}
 			default:
 				if m.youtubeMusicLocalSearching {
@@ -782,11 +792,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			}
 		case "right":
 			if m.youtubeMusicPlayer != nil {
-				next := loopingPlaylistTrackIndex(m.youtubeMusicQueue.Tracks, m.youtubeMusicPlayingIndex+1, 1)
-				if m.youtubeMusicShuffle {
-					next = shuffleTrackIndex(m.youtubeMusicQueue.Tracks, m.youtubeMusicPlayingIndex)
-				}
-				return m, m.requestYouTubeTrack(next)
+				return m, m.requestYouTubeTrack(m.upcomingTrackIndex())
 			}
 		case "left":
 			if m.youtubeMusicPlayer != nil {
@@ -843,6 +849,8 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		case "s", "S":
 			m.youtubeMusicShuffle = !m.youtubeMusicShuffle
 			m.markSettingsDirty()
+			// The upcoming track depends on shuffle; pick and fetch it again.
+			return m, m.prefetchNextTrack()
 		case "a", "A":
 			if m.youtubeMusicView == youtubeMusicPlaylistView {
 				m.beginLocalTrackPicker()

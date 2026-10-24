@@ -1,211 +1,89 @@
 package spectrum
 
 import (
-	"bytes"
-	"context"
 	"encoding/binary"
-	"errors"
-	"fmt"
-	"io"
 	"math"
 	"math/cmplx"
-	"os/exec"
-	"strconv"
-	"strings"
 	"sync"
-	"time"
 )
 
 const (
-	sampleRate = 44100
+	sampleRate = 48000
 	windowSize = 4096
 	bandCount  = 96
 )
 
 // Snapshot is a concurrency-safe view of the latest frequency analysis.
 type Snapshot struct {
-	Bands  []float64
-	Active bool
-	Err    error
+	Bands []float64
 }
 
-// Analyzer uses ffmpeg to decode the current local track to mono PCM and
-// computes logarithmic frequency bands without capturing system audio.
+// Analyzer turns the PCM the player sends to the speakers into logarithmic
+// frequency bands, so the spectrum needs no decoder of its own.
 type Analyzer struct {
-	ffmpeg string
-
-	mu         sync.RWMutex
+	mu         sync.Mutex
+	window     []float64
+	samples    []complex128
+	magnitudes []float64
 	bands      []float64
-	active     bool
-	err        error
-	source     string
-	generation uint64
-	cancel     context.CancelFunc
-	closed     bool
-	workers    sync.WaitGroup
 }
 
-// New locates ffmpeg and creates an idle analyzer.
-func New() (*Analyzer, error) {
-	path, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		return nil, errors.New("ffmpeg is required for the music spectrum")
+func New() *Analyzer {
+	return &Analyzer{
+		window:     make([]float64, 0, windowSize),
+		samples:    make([]complex128, windowSize),
+		magnitudes: make([]float64, windowSize/2),
+		bands:      make([]float64, bandCount),
 	}
-	return &Analyzer{ffmpeg: path, bands: make([]float64, bandCount)}, nil
 }
 
-// Sync starts or stops analysis to match the owned player's current source.
-// A stopped analyzer restarts at position, which keeps pause/resume aligned.
-func (analyzer *Analyzer) Sync(path string, playing bool, position time.Duration) {
-	path = strings.TrimSpace(path)
+// Push adds interleaved stereo float32 little-endian PCM at 48 kHz.
+func (analyzer *Analyzer) Push(pcm []byte) {
 	analyzer.mu.Lock()
-	if analyzer.closed {
-		analyzer.mu.Unlock()
-		return
+	defer analyzer.mu.Unlock()
+	for offset := 0; offset+8 <= len(pcm); offset += 8 {
+		left := math.Float32frombits(binary.LittleEndian.Uint32(pcm[offset:]))
+		right := math.Float32frombits(binary.LittleEndian.Uint32(pcm[offset+4:]))
+		analyzer.window = append(analyzer.window, float64(left+right)/2)
+		if len(analyzer.window) == windowSize {
+			analyzer.analyze()
+			analyzer.window = analyzer.window[:0]
+		}
 	}
-	if !playing || path == "" {
-		analyzer.stopLocked()
-		analyzer.mu.Unlock()
-		return
-	}
-	if analyzer.active && analyzer.source == path {
-		analyzer.mu.Unlock()
-		return
-	}
-	analyzer.stopLocked()
-	analyzer.generation++
-	generation := analyzer.generation
-	ctx, cancel := context.WithCancel(context.Background())
-	analyzer.cancel = cancel
-	analyzer.source = path
-	analyzer.active = true
-	analyzer.err = nil
-	analyzer.workers.Add(1)
-	analyzer.mu.Unlock()
+}
 
-	go analyzer.run(ctx, generation, path, max(0, position))
+// Reset clears the bands when playback stops or jumps.
+func (analyzer *Analyzer) Reset() {
+	analyzer.mu.Lock()
+	defer analyzer.mu.Unlock()
+	analyzer.window = analyzer.window[:0]
+	clear(analyzer.bands)
 }
 
 // Snapshot returns a copy safe for rendering.
 func (analyzer *Analyzer) Snapshot() Snapshot {
-	analyzer.mu.RLock()
-	defer analyzer.mu.RUnlock()
-	bands := append([]float64(nil), analyzer.bands...)
-	return Snapshot{Bands: bands, Active: analyzer.active, Err: analyzer.err}
-}
-
-// Close terminates ffmpeg and waits for its output reader to finish.
-func (analyzer *Analyzer) Close() error {
-	analyzer.mu.Lock()
-	if analyzer.closed {
-		analyzer.mu.Unlock()
-		return nil
-	}
-	analyzer.closed = true
-	analyzer.stopLocked()
-	analyzer.mu.Unlock()
-	analyzer.workers.Wait()
-	return nil
-}
-
-func (analyzer *Analyzer) stopLocked() {
-	if analyzer.cancel != nil {
-		analyzer.cancel()
-		analyzer.cancel = nil
-	}
-	analyzer.active = false
-	analyzer.source = ""
-}
-
-func (analyzer *Analyzer) run(ctx context.Context, generation uint64, path string, position time.Duration) {
-	defer analyzer.workers.Done()
-	seek := strconv.FormatFloat(position.Seconds(), 'f', 3, 64)
-	command := exec.CommandContext(ctx, analyzer.ffmpeg,
-		"-hide_banner", "-loglevel", "error", "-nostdin",
-		"-re", "-ss", seek, "-i", path,
-		"-map", "0:a:0", "-vn", "-ac", "1", "-ar", strconv.Itoa(sampleRate),
-		"-f", "f32le", "pipe:1",
-	)
-	configureCommand(command)
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		analyzer.finish(generation, fmt.Errorf("open ffmpeg spectrum output: %w", err))
-		return
-	}
-	var stderr bytes.Buffer
-	command.Stderr = &stderr
-	if err := command.Start(); err != nil {
-		analyzer.finish(generation, fmt.Errorf("start ffmpeg spectrum: %w", err))
-		return
-	}
-
-	windowBytes := make([]byte, windowSize*4)
-	previous := make([]float64, bandCount)
-	for {
-		_, readErr := io.ReadFull(stdout, windowBytes)
-		if readErr != nil {
-			break
-		}
-		bands := analyzeWindow(windowBytes, previous)
-		copy(previous, bands)
-		analyzer.publish(generation, bands)
-	}
-	waitErr := command.Wait()
-	if ctx.Err() != nil {
-		analyzer.finish(generation, nil)
-		return
-	}
-	if waitErr != nil {
-		message := strings.TrimSpace(stderr.String())
-		if message == "" {
-			message = waitErr.Error()
-		}
-		analyzer.finish(generation, fmt.Errorf("ffmpeg spectrum: %s", message))
-		return
-	}
-	analyzer.finish(generation, nil)
-}
-
-func (analyzer *Analyzer) publish(generation uint64, bands []float64) {
 	analyzer.mu.Lock()
 	defer analyzer.mu.Unlock()
-	if analyzer.closed || generation != analyzer.generation {
-		return
-	}
-	copy(analyzer.bands, bands)
+	return Snapshot{Bands: append([]float64(nil), analyzer.bands...)}
 }
 
-func (analyzer *Analyzer) finish(generation uint64, err error) {
-	analyzer.mu.Lock()
-	defer analyzer.mu.Unlock()
-	if generation != analyzer.generation {
-		return
-	}
-	analyzer.active = false
-	analyzer.cancel = nil
-	if err != nil {
-		analyzer.err = err
-	}
-}
-
-func analyzeWindow(raw []byte, previous []float64) []float64 {
-	samples := make([]complex128, windowSize)
-	for index := range samples {
-		bits := binary.LittleEndian.Uint32(raw[index*4 : index*4+4])
-		value := float64(math.Float32frombits(bits))
+// analyze turns the full window into bands, smoothed against the previous
+// ones. The caller holds mu.
+func (analyzer *Analyzer) analyze() {
+	samples := analyzer.samples
+	for index, value := range analyzer.window {
 		window := 0.5 - 0.5*math.Cos(2*math.Pi*float64(index)/float64(windowSize-1))
 		samples[index] = complex(value*window, 0)
 	}
 	fft(samples)
 
-	bands := make([]float64, bandCount)
 	const minimumFrequency = 45.0
 	const maximumFrequency = 16000.0
-	magnitudes := make([]float64, windowSize/2)
+	magnitudes := analyzer.magnitudes
 	for bin := 1; bin < len(magnitudes); bin++ {
 		magnitudes[bin] = cmplx.Abs(samples[bin]) / (windowSize / 2)
 	}
-	for band := range bands {
+	for band := range analyzer.bands {
 		low := minimumFrequency * math.Pow(maximumFrequency/minimumFrequency, float64(band)/bandCount)
 		high := minimumFrequency * math.Pow(maximumFrequency/minimumFrequency, float64(band+1)/bandCount)
 		start := max(1, int(math.Ceil(low*windowSize/sampleRate)))
@@ -229,16 +107,14 @@ func analyzeWindow(raw []byte, previous []float64) []float64 {
 		}
 		decibels := 20 * math.Log10(max(magnitude, 0.000001))
 		level := min(1, max(0, (decibels+72)/66))
-		if band < len(previous) {
-			if level >= previous[band] {
-				level = previous[band]*0.25 + level*0.75
-			} else {
-				level = previous[band]*0.82 + level*0.18
-			}
+		previous := analyzer.bands[band]
+		if level >= previous {
+			level = previous*0.25 + level*0.75
+		} else {
+			level = previous*0.82 + level*0.18
 		}
-		bands[band] = level
+		analyzer.bands[band] = level
 	}
-	return bands
 }
 
 func fft(values []complex128) {

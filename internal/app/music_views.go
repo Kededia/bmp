@@ -62,6 +62,11 @@ func (m Model) youtubeMusicBrowserView(innerWidth, height int) string {
 		account += "  ·  " + m.youtubeMusicAccount.Name
 	}
 	header := lipgloss.NewStyle().Foreground(m.colors.Cyan).Bold(true).Render(truncate(account, innerWidth))
+	if m.youtubeMusicCacheSize >= 0 {
+		size := "MUSIC FOLDER  " + formatBytes(m.youtubeMusicCacheSize)
+		header = lipgloss.NewStyle().Foreground(m.colors.Cyan).Bold(true).Render(truncate(account, max(1, innerWidth-len(size)-2)))
+		header = spread(header, muted.Render(size), innerWidth)
+	}
 	if m.youtubeMusicView == youtubeMusicPlaylistView {
 		return m.youtubeMusicPlaylistViewContent(header, innerWidth, height)
 	}
@@ -257,24 +262,20 @@ func (m Model) youtubeMusicCacheStatusView(width int) string {
 		}
 		return ""
 	}
-	position := fmt.Sprintf("%d/%d", status.queuePosition, status.queueTotal)
+	slot := "NEXT"
+	if m.youtubeMusicCacheStatusNow {
+		slot = "NOW"
+	}
 	track := ""
 	if status.trackIndex >= 0 && status.trackIndex < len(m.youtubeMusicQueue.Tracks) {
 		track = m.youtubeMusicQueue.Tracks[status.trackIndex].Title
 	}
 	label := strings.ToUpper(string(status.phase))
 	color := m.colors.Yellow
-	if status.phase == musicCacheReady || status.phase == musicCacheComplete {
+	if status.phase == musicCacheReady {
 		color = m.colors.Green
 	} else if status.phase == musicCacheFailed {
 		color = m.colors.Red
-	}
-	if status.phase == musicCacheComplete {
-		directory := "music"
-		if m.youtubeMusicCache != nil {
-			directory = m.youtubeMusicCache.Directory()
-		}
-		return lipgloss.NewStyle().Foreground(color).Render(truncate("CACHE  ✓ "+position+"  "+directory, width))
 	}
 	progress := ""
 	if status.phase == musicCacheDownloading && status.totalBytes > 0 {
@@ -286,7 +287,7 @@ func (m Model) youtubeMusicCacheStatusView(width int) string {
 	if status.err != nil {
 		track = status.err.Error()
 	}
-	text := "CACHE  " + position + "  " + label + progress
+	text := "DOWNLOAD  " + slot + "  " + label + progress
 	if track != "" {
 		text += "  " + track
 	}
@@ -360,15 +361,9 @@ func (m Model) musicSpectrumView(width, height int) string {
 		return ""
 	}
 	if m.spectrumAnalyzer == nil {
-		if m.spectrumErr != nil {
-			return lipgloss.NewStyle().Foreground(m.colors.Red).Render(truncate("SPECTRUM  "+m.spectrumErr.Error(), width))
-		}
 		return ""
 	}
 	snapshot := m.spectrumAnalyzer.Snapshot()
-	if snapshot.Err != nil {
-		return lipgloss.NewStyle().Foreground(m.colors.Red).Render(truncate("SPECTRUM  "+snapshot.Err.Error(), width))
-	}
 	if len(snapshot.Bands) == 0 {
 		return ""
 	}
@@ -492,6 +487,20 @@ func (m Model) progressBar(position, duration time.Duration, width int) string {
 	active := lipgloss.NewStyle().Foreground(m.colors.Green).Render(strings.Repeat("━", filled))
 	remaining := lipgloss.NewStyle().Foreground(m.colors.Muted).Render(strings.Repeat("─", width-filled))
 	return active + remaining
+}
+
+func formatBytes(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	}
+	value, unit := float64(size)/1024, "KB"
+	for _, next := range []string{"MB", "GB", "TB"} {
+		if value < 1024 {
+			break
+		}
+		value, unit = value/1024, next
+	}
+	return fmt.Sprintf("%.1f %s", value, unit)
 }
 
 func formatMediaTime(duration time.Duration) string {
