@@ -2,4 +2,7 @@
 *.exe
 *.test
 *.out
-.env
+
+# Local notes for agents
+AGENTS.md
+HANDOFF.md

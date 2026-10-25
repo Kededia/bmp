@@ -70,18 +70,19 @@ var Nord = Theme{
 	Red:        lipgloss.Color("#BF616A"),
 }
 
-// Synthwave is a high-contrast theme: hot pink and sunset orange on black, after 1980s neon.
+// Synthwave is a high-contrast sunset theme: orange, hot pink and violet
+// on a violet-black background.
 var Synthwave = Theme{
 	Name:       "Synthwave",
-	Background: lipgloss.Color("#000000"),
-	Foreground: lipgloss.Color("#FFE9FA"),
-	Muted:      lipgloss.Color("#8A6A8F"),
-	Border:     lipgloss.Color("#3E2448"),
-	Cyan:       lipgloss.Color("#2DE2E6"),
-	Magenta:    lipgloss.Color("#FF2BD6"),
-	Yellow:     lipgloss.Color("#FF9E2C"),
-	Green:      lipgloss.Color("#4DFF9E"),
-	Red:        lipgloss.Color("#FF3864"),
+	Background: lipgloss.Color("#0B0014"),
+	Foreground: lipgloss.Color("#FFE6F7"),
+	Muted:      lipgloss.Color("#8E6FA0"),
+	Border:     lipgloss.Color("#3B1F55"),
+	Cyan:       lipgloss.Color("#FF8E3C"),
+	Magenta:    lipgloss.Color("#FF2E97"),
+	Yellow:     lipgloss.Color("#FFD23F"),
+	Green:      lipgloss.Color("#B967FF"),
+	Red:        lipgloss.Color("#FF3355"),
 }
 
 // Ember is a high-contrast theme: fire red and amber on black.
