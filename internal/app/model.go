@@ -49,6 +49,9 @@ type youtubeMusicPlaybackMsg struct {
 type youtubeMusicControlMsg struct {
 	snapshot playback.Snapshot
 	err      error
+	// volumeSet marks a volume change made by the person, which the playing
+	// song keeps.
+	volumeSet bool
 }
 
 type youtubeMusicView int
@@ -587,8 +590,16 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				m.youtubeMusicTrackSelected = msg.trackIndex
 			}
 			m.youtubeMusicPlayback = m.youtubeMusicPlayer.Snapshot()
+			// A song plays at the volume last set while it played, else at
+			// the last volume used.
+			volume := m.persistedSettings.Volume
+			if m.youtubeMusicStore != nil {
+				if saved, found, err := m.youtubeMusicStore.Volume(msg.videoID); err == nil && found {
+					volume = saved
+				}
+			}
 			commands := []tea.Cmd{applyYouTubeMusicPreferences(
-				m.appContext, m.youtubeMusicPlayer, m.persistedSettings.Volume, m.persistedSettings.Muted,
+				m.appContext, m.youtubeMusicPlayer, volume, m.persistedSettings.Muted,
 			)}
 			if m.youtubeMusicStore != nil {
 				count, err := m.youtubeMusicStore.Increment(msg.videoID)
@@ -610,6 +621,9 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		if msg.err == nil {
 			m.youtubeMusicPlayback = msg.snapshot
 			m.markSettingsDirty()
+			if msg.volumeSet && m.youtubeMusicStore != nil && m.youtubeMusicPlayingVideoID != "" {
+				m.youtubeMusicStoreErr = m.youtubeMusicStore.SaveVolume(m.youtubeMusicPlayingVideoID, msg.snapshot.Volume)
+			}
 		}
 
 	case setupCheckMsg:
