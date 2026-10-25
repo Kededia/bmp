@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -30,6 +31,8 @@ type playlistSyncMsg struct {
 	setVideoID string
 	err        error
 }
+
+const pickScroll = "pick"
 
 type playlistCreatedMsg struct {
 	playlist youtubemusic.Playlist
@@ -107,10 +110,39 @@ func (m *Model) handleSync(msg playlistSyncMsg) tea.Cmd {
 	return m.nextSync()
 }
 
+// beginNewPlaylist asks for a new playlist's name. From an open playlist,
+// songs of it are then picked to start the new one with.
 func (m *Model) beginNewPlaylist() tea.Cmd {
 	m.youtubeMusicNaming = true
+	m.youtubeMusicPickTracks = nil
+	if m.youtubeMusicView == youtubeMusicPlaylistView {
+		m.youtubeMusicPickTracks = slices.DeleteFunc(slices.Clone(m.youtubeMusicPlaylist.Tracks), func(track youtubemusic.Track) bool {
+			return !track.Available || track.VideoID == ""
+		})
+	}
 	m.youtubeMusicNameInput.SetValue("")
 	return m.youtubeMusicNameInput.Focus()
+}
+
+// createPlaylist creates the playlist with tracks. Should YouTube Music not
+// list them yet, the new playlist shows them without entry IDs until reloaded.
+func createPlaylist(parent context.Context, client *youtubemusic.Client, title string, tracks []youtubemusic.Track) tea.Cmd {
+	videoIDs := make([]string, 0, len(tracks))
+	for _, track := range tracks {
+		videoIDs = append(videoIDs, track.VideoID)
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(parent, time.Minute)
+		defer cancel()
+		playlist, err := client.CreatePlaylist(ctx, title, videoIDs)
+		if err != nil {
+			return playlistCreatedMsg{err: err}
+		}
+		if len(playlist.Tracks) == 0 {
+			playlist.Tracks = tracks
+		}
+		return playlistCreatedMsg{playlist: playlist}
+	}
 }
 
 func (m *Model) handleNameKey(msg tea.KeyMsg) tea.Cmd {
@@ -126,19 +158,91 @@ func (m *Model) handleNameKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		m.youtubeMusicNaming = false
 		m.youtubeMusicNameInput.Blur()
-		m.youtubeMusicDeleteStatus = "Creating " + title + "…"
-		m.youtubeMusicDeleteStatusError = false
-		client, parent := m.youtubeMusicClient, m.appContext
-		return func() tea.Msg {
-			ctx, cancel := context.WithTimeout(parent, 30*time.Second)
-			defer cancel()
-			playlist, err := client.CreatePlaylist(ctx, title)
-			return playlistCreatedMsg{playlist: playlist, err: err}
+		if len(m.youtubeMusicPickTracks) > 0 {
+			m.youtubeMusicPicking = true
+			m.youtubeMusicPicked = make([]bool, len(m.youtubeMusicPickTracks))
+			m.youtubeMusicPickSelected = 0
+			return nil
 		}
+		return m.startCreate(nil)
 	}
 	var command tea.Cmd
 	m.youtubeMusicNameInput, command = m.youtubeMusicNameInput.Update(msg)
 	return command
+}
+
+func (m *Model) startCreate(tracks []youtubemusic.Track) tea.Cmd {
+	title := strings.TrimSpace(m.youtubeMusicNameInput.Value())
+	m.youtubeMusicDeleteStatus = "Creating " + title + "…"
+	m.youtubeMusicDeleteStatusError = false
+	return createPlaylist(m.appContext, m.youtubeMusicClient, title, tracks)
+}
+
+// handlePickKey ticks the songs the new playlist starts with.
+func (m *Model) handlePickKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc":
+		m.youtubeMusicPicking = false
+	case "up":
+		m.youtubeMusicPickSelected = max(0, m.youtubeMusicPickSelected-1)
+	case "down":
+		m.youtubeMusicPickSelected = min(len(m.youtubeMusicPickTracks)-1, m.youtubeMusicPickSelected+1)
+	case " ", "space":
+		m.youtubeMusicPicked[m.youtubeMusicPickSelected] = !m.youtubeMusicPicked[m.youtubeMusicPickSelected]
+	case "a", "A":
+		// Tick every song, or untick them all when all are ticked.
+		all := !slices.Contains(m.youtubeMusicPicked, false)
+		for index := range m.youtubeMusicPicked {
+			m.youtubeMusicPicked[index] = !all
+		}
+	case "enter":
+		var tracks []youtubemusic.Track
+		for index, track := range m.youtubeMusicPickTracks {
+			if m.youtubeMusicPicked[index] {
+				tracks = append(tracks, track)
+			}
+		}
+		m.youtubeMusicPicking = false
+		return m.startCreate(tracks)
+	}
+	return nil
+}
+
+func (m Model) youtubeMusicPickView(width, height int) string {
+	muted := lipgloss.NewStyle().Foreground(m.colors.Muted)
+	count := 0
+	for _, picked := range m.youtubeMusicPicked {
+		if picked {
+			count++
+		}
+	}
+	lines := []string{
+		lipgloss.NewStyle().Foreground(m.colors.Cyan).Bold(true).Render(truncate("NEW PLAYLIST  ·  "+strings.TrimSpace(m.youtubeMusicNameInput.Value()), width)),
+		muted.Render(fmt.Sprintf("Tick the songs to start it with from %s  ·  %d ticked", m.youtubeMusicPlaylist.Title, count)),
+		"",
+	}
+	selectedIndex := min(max(0, m.youtubeMusicPickSelected), len(m.youtubeMusicPickTracks)-1)
+	start, end := m.selectionWindow(pickScroll, len(m.youtubeMusicPickTracks), selectedIndex, max(1, height-len(lines)))
+	for index := start; index < end; index++ {
+		track := m.youtubeMusicPickTracks[index]
+		selected := index == selectedIndex
+		cursor := "  "
+		if selected {
+			cursor = lipgloss.NewStyle().Foreground(m.colors.Magenta).Bold(true).Render("> ")
+		}
+		box := muted.Render("[ ] ")
+		if m.youtubeMusicPicked[index] {
+			box = lipgloss.NewStyle().Foreground(m.colors.Green).Bold(true).Render("[x] ")
+		}
+		details := trackArtistNames(track.Artists)
+		if details != "" {
+			details = "  " + details
+		}
+		available := max(8, width-6-lipgloss.Width(details))
+		title := lipgloss.NewStyle().Foreground(m.colors.Foreground).Bold(selected).Underline(selected).Render(truncate(track.Title, available))
+		lines = append(lines, cursor+box+title+muted.Render(details))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // handleCreated lists the new playlist at the top of the library, below
@@ -155,11 +259,12 @@ func (m *Model) handleCreated(msg playlistCreatedMsg) {
 	}
 	m.youtubeMusicPlaylists = slices.Insert(m.youtubeMusicPlaylists, at, msg.playlist)
 	m.youtubeMusicPlaylistSelected = at
+	m.rememberEntries(msg.playlist)
 	m.youtubeMusicPlaylist = msg.playlist
 	m.youtubeMusicEdits = musicstore.Edits{}
 	m.youtubeMusicView = youtubeMusicPlaylistView
 	m.youtubeMusicTrackSelected = 0
-	m.youtubeMusicDeleteStatus = "Created " + msg.playlist.Title + ". Press / to add songs."
+	m.youtubeMusicDeleteStatus = fmt.Sprintf("Created %s with %d songs. Press / to add more.", msg.playlist.Title, len(msg.playlist.Tracks))
 	m.youtubeMusicDeleteStatusError = false
 }
 

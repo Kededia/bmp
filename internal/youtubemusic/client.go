@@ -203,18 +203,30 @@ func (client *Client) GetPlaylist(ctx context.Context, id string) (Playlist, err
 	return playlist, nil
 }
 
-// CreatePlaylist creates a private playlist named title.
-func (client *Client) CreatePlaylist(ctx context.Context, title string) (Playlist, error) {
+// CreatePlaylist creates a private playlist named title, holding videoIDs.
+// With songs, it reads the playlist back for their entry IDs, which moving
+// and removing them need, retrying while YouTube Music catches up.
+func (client *Client) CreatePlaylist(ctx context.Context, title string, videoIDs []string) (Playlist, error) {
 	if client == nil || client.api == nil {
 		return Playlist{}, errors.New("YouTube Music client is not configured")
 	}
-	payload, err := client.api.CreatePlaylist(ctx, title)
+	payload, err := client.api.CreatePlaylist(ctx, title, videoIDs)
 	if err != nil {
 		return Playlist{}, classifyError(err)
 	}
 	id := stringValue(payload["playlistId"])
 	if id == "" {
 		return Playlist{}, errors.New("YouTube Music did not create the playlist")
+	}
+	for attempt := 0; attempt < 5 && len(videoIDs) > 0; attempt++ {
+		select {
+		case <-ctx.Done():
+			return Playlist{}, ctx.Err()
+		case <-time.After(time.Second):
+		}
+		if loaded, err := client.GetPlaylist(ctx, id); err == nil && len(loaded.Tracks) >= len(videoIDs) {
+			return loaded, nil
+		}
 	}
 	return Playlist{ID: id, Title: title, Owned: true}, nil
 }

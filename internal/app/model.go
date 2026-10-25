@@ -114,6 +114,10 @@ type Model struct {
 	youtubeMusicView              youtubeMusicView
 	youtubeMusicNaming            bool
 	youtubeMusicNameInput         textinput.Model
+	youtubeMusicPicking           bool
+	youtubeMusicPickTracks        []youtubemusic.Track
+	youtubeMusicPicked            []bool
+	youtubeMusicPickSelected      int
 	youtubeMusicSyncs             []playlistSync
 	youtubeMusicSyncing           bool
 	youtubeMusicEntryIDs          map[string]string
@@ -688,6 +692,9 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		if m.youtubeMusicNaming {
 			return m, m.handleNameKey(msg)
 		}
+		if m.youtubeMusicPicking {
+			return m, m.handlePickKey(msg)
+		}
 		if m.paletteOpen {
 			switch msg.String() {
 			case "esc", "ctrl+p":
@@ -833,7 +840,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				return m, m.openSearch()
 			}
 		case "n", "N":
-			if m.youtubeMusicView == youtubeMusicLibraryView && !m.youtubeMusicLoading && m.youtubeMusicClient != nil {
+			if !m.youtubeMusicLoading && m.youtubeMusicClient != nil {
 				return m, m.beginNewPlaylist()
 			}
 		case "pgup", "alt+up", "pgdown", "alt+down":
@@ -906,7 +913,13 @@ func (m Model) View() string {
 	hints := []ui.Hint{{Key: "↑↓", Label: "select"}, {Key: "↵", Label: "open"}, {Key: "/", Label: "search"}, {Key: "N", Label: "new playlist"}}
 	hints = append(append(append(hints, playing...), ui.Hint{Key: "^R", Label: "refresh"}), general...)
 	if m.youtubeMusicNaming {
-		hints = []ui.Hint{{Key: "↵", Label: "create"}, {Key: "esc", Label: "cancel"}}
+		next := "create"
+		if len(m.youtubeMusicPickTracks) > 0 {
+			next = "pick songs"
+		}
+		hints = []ui.Hint{{Key: "↵", Label: next}, {Key: "esc", Label: "cancel"}}
+	} else if m.youtubeMusicPicking {
+		hints = []ui.Hint{{Key: "↑↓"}, {Key: "space", Label: "tick"}, {Key: "A", Label: "all"}, {Key: "↵", Label: "create"}, {Key: "esc", Label: "cancel"}}
 	} else if m.youtubeMusicSearchOpen {
 		pick := "play"
 		if m.youtubeMusicSearchAdding {
@@ -925,6 +938,7 @@ func (m Model) View() string {
 		if m.browsingQueue() {
 			hints = append(hints, ui.Hint{Key: "L", Label: "loop"})
 		}
+		hints = append(hints, ui.Hint{Key: "N", Label: "new from this"})
 		hints = append(append(hints, playing...), general...)
 	}
 	folderSize := ""
