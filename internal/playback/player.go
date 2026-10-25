@@ -41,6 +41,9 @@ type Snapshot struct {
 	Volume   int
 	Muted    bool
 	Err      error
+	// Latency is how long decoded audio waits in the output buffers before
+	// it plays.
+	Latency time.Duration
 }
 
 // Player controls one local audio output session.

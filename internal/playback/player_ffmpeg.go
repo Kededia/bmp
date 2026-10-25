@@ -26,6 +26,9 @@ const (
 	channelCount  = 2
 	frameBytes    = channelCount * 4
 	initialVolume = 10
+	// outputBuffer is the system audio buffer, which holds this much audio
+	// ahead of what plays.
+	outputBuffer = 200 * time.Millisecond
 )
 
 var (
@@ -40,7 +43,7 @@ func openAudio() (*oto.Context, error) {
 	audioOnce.Do(func() {
 		output, ready, err := oto.NewContext(&oto.NewContextOptions{
 			SampleRate: sampleRate, ChannelCount: channelCount, Format: oto.FormatFloat32LE,
-			BufferSize: 200 * time.Millisecond, ApplicationName: "BMP",
+			BufferSize: outputBuffer, ApplicationName: "BMP",
 		})
 		if err != nil {
 			audioErr = fmt.Errorf("open audio output: %w", err)
@@ -275,7 +278,9 @@ func (player *ffmpegPlayer) Snapshot() Snapshot {
 	if duration := current.log.duration(); duration > 0 {
 		snapshot.Duration = duration
 	}
-	played := max(0, current.reader.frames.Load()*frameBytes-int64(current.output.BufferedSize())) / frameBytes
+	buffered := int64(current.output.BufferedSize())
+	snapshot.Latency = outputBuffer + time.Duration(buffered)*time.Second/(sampleRate*frameBytes)
+	played := max(0, current.reader.frames.Load()*frameBytes-buffered) / frameBytes
 	snapshot.Position = current.start + time.Duration(played)*time.Second/sampleRate
 	err := current.exitErr
 	if err == nil {

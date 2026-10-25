@@ -330,7 +330,7 @@ func (m Model) musicSpectrumView(width, height int) string {
 	if m.spectrumAnalyzer == nil {
 		return ""
 	}
-	snapshot := m.spectrumAnalyzer.Snapshot()
+	snapshot := m.spectrumAnalyzer.Snapshot(m.youtubeMusicPlayback.Latency)
 	if len(snapshot.Bands) == 0 {
 		return ""
 	}

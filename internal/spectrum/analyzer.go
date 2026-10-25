@@ -5,12 +5,19 @@ import (
 	"math"
 	"math/cmplx"
 	"sync"
+	"time"
 )
 
 const (
 	sampleRate = 48000
 	windowSize = 4096
 	bandCount  = 96
+	// historySize keeps about 1.4 seconds of audio, enough to reach back
+	// past the output buffers to what plays now.
+	historySize = 1 << 16
+	// analysisStep is how far the window moves before it is analyzed again,
+	// so extra renders do not speed up the smoothing.
+	analysisStep = 1024
 )
 
 // Snapshot is a concurrency-safe view of the latest frequency analysis.
@@ -19,18 +26,24 @@ type Snapshot struct {
 }
 
 // Analyzer turns the PCM the player sends to the speakers into logarithmic
-// frequency bands, so the spectrum needs no decoder of its own.
+// frequency bands, so the spectrum needs no decoder of its own. The PCM
+// arrives before it plays, as it then waits in the output buffers, so the
+// analyzer keeps recent audio and analyzes what plays now.
 type Analyzer struct {
-	mu         sync.Mutex
-	window     []float64
-	samples    []complex128
-	magnitudes []float64
-	bands      []float64
+	mu          sync.Mutex
+	history     []float32
+	written     int64
+	analyzedEnd int64
+	window      []float64
+	samples     []complex128
+	magnitudes  []float64
+	bands       []float64
 }
 
 func New() *Analyzer {
 	return &Analyzer{
-		window:     make([]float64, 0, windowSize),
+		history:    make([]float32, historySize),
+		window:     make([]float64, windowSize),
 		samples:    make([]complex128, windowSize),
 		magnitudes: make([]float64, windowSize/2),
 		bands:      make([]float64, bandCount),
@@ -44,11 +57,8 @@ func (analyzer *Analyzer) Push(pcm []byte) {
 	for offset := 0; offset+8 <= len(pcm); offset += 8 {
 		left := math.Float32frombits(binary.LittleEndian.Uint32(pcm[offset:]))
 		right := math.Float32frombits(binary.LittleEndian.Uint32(pcm[offset+4:]))
-		analyzer.window = append(analyzer.window, float64(left+right)/2)
-		if len(analyzer.window) == windowSize {
-			analyzer.analyze()
-			analyzer.window = analyzer.window[:0]
-		}
+		analyzer.history[analyzer.written%historySize] = (left + right) / 2
+		analyzer.written++
 	}
 }
 
@@ -56,19 +66,29 @@ func (analyzer *Analyzer) Push(pcm []byte) {
 func (analyzer *Analyzer) Reset() {
 	analyzer.mu.Lock()
 	defer analyzer.mu.Unlock()
-	analyzer.window = analyzer.window[:0]
+	analyzer.written, analyzer.analyzedEnd = 0, 0
 	clear(analyzer.bands)
 }
 
-// Snapshot returns a copy safe for rendering.
-func (analyzer *Analyzer) Snapshot() Snapshot {
+// Snapshot returns the bands of the audio playing now, which is delay older
+// than the newest pushed audio, as a copy safe for rendering.
+func (analyzer *Analyzer) Snapshot(delay time.Duration) Snapshot {
 	analyzer.mu.Lock()
 	defer analyzer.mu.Unlock()
+	end := analyzer.written - int64(delay.Seconds()*sampleRate)
+	end = max(end, analyzer.written-historySize+windowSize)
+	if end >= windowSize && (end-analyzer.analyzedEnd >= analysisStep || end < analyzer.analyzedEnd) {
+		for index := range analyzer.window {
+			analyzer.window[index] = float64(analyzer.history[(end-windowSize+int64(index))%historySize])
+		}
+		analyzer.analyze()
+		analyzer.analyzedEnd = end
+	}
 	return Snapshot{Bands: append([]float64(nil), analyzer.bands...)}
 }
 
-// analyze turns the full window into bands, smoothed against the previous
-// ones. The caller holds mu.
+// analyze turns the window into bands, smoothed against the previous ones.
+// The caller holds mu.
 func (analyzer *Analyzer) analyze() {
 	samples := analyzer.samples
 	for index, value := range analyzer.window {
