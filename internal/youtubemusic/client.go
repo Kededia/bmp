@@ -39,7 +39,6 @@ type Playlist struct {
 	Title      string
 	TrackCount int
 	Tracks     []Track
-	Local      bool
 }
 
 type Client struct {

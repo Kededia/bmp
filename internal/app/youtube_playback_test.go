@@ -44,12 +44,10 @@ func TestRemovingTrackCancelsCacheQueue(t *testing.T) {
 	m := Model{
 		youtubeMusicPlaylist: youtubemusic.Playlist{
 			ID:     "local-queue",
-			Local:  true,
 			Tracks: []youtubemusic.Track{{VideoID: "video", Available: true}},
 		},
 		youtubeMusicQueue: youtubemusic.Playlist{
 			ID:     "local-queue",
-			Local:  true,
 			Tracks: []youtubemusic.Track{{VideoID: "video", Available: true}},
 		},
 		youtubeMusicTrackSelected:   0,
@@ -77,7 +75,7 @@ func TestMusicTrackDeletionRequiresConfirmation(t *testing.T) {
 	m := Model{
 		youtubeMusicView: youtubeMusicPlaylistView,
 		youtubeMusicPlaylist: youtubemusic.Playlist{
-			Local:  true,
+			ID:     "playlist",
 			Tracks: []youtubemusic.Track{{VideoID: "first"}, {VideoID: "second"}},
 		},
 		youtubeMusicPlayingIndex:   -1,
@@ -100,7 +98,7 @@ func TestMusicTrackDeletionRequiresConfirmation(t *testing.T) {
 func TestMusicTrackDeletionCanBeCanceled(t *testing.T) {
 	m := Model{
 		youtubeMusicView:         youtubeMusicPlaylistView,
-		youtubeMusicPlaylist:     youtubemusic.Playlist{Local: true, Tracks: []youtubemusic.Track{{VideoID: "track"}}},
+		youtubeMusicPlaylist:     youtubemusic.Playlist{ID: "playlist", Tracks: []youtubemusic.Track{{VideoID: "track"}}},
 		youtubeMusicPlayingIndex: -1,
 	}
 

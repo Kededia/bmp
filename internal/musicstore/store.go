@@ -17,7 +17,7 @@ import (
 
 var (
 	playCountsBucket = []byte("play-counts")
-	playlistsBucket  = []byte("local-playlists")
+	editsBucket      = []byte("playlist-edits")
 )
 
 type Store struct {
@@ -88,47 +88,52 @@ func (store *Store) Counts(trackIDs []string) (map[string]uint64, error) {
 	return counts, nil
 }
 
-func (store *Store) Playlists() ([]youtubemusic.Playlist, error) {
-	var playlists []youtubemusic.Playlist
+// Edits are the changes made in BMP to a YouTube playlist, kept apart from
+// it so songs added on YouTube still show up.
+type Edits struct {
+	// Order lists every song's video ID as last arranged in BMP.
+	Order []string `json:"order"`
+	// Added holds songs added in BMP, which YouTube does not list.
+	Added []youtubemusic.Track `json:"added,omitempty"`
+	// Removed holds video IDs hidden in BMP.
+	Removed []string `json:"removed,omitempty"`
+}
+
+// Edits returns the stored edits of a playlist, empty when it has none.
+func (store *Store) Edits(playlistID string) (Edits, error) {
+	var edits Edits
 	err := store.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(playlistsBucket)
+		bucket := tx.Bucket(editsBucket)
 		if bucket == nil {
 			return nil
 		}
-		return bucket.ForEach(func(_, value []byte) error {
-			var playlist youtubemusic.Playlist
-			if err := json.Unmarshal(value, &playlist); err != nil {
-				return err
-			}
-			playlists = append(playlists, playlist)
-			return nil
-		})
+		if value := bucket.Get([]byte(playlistID)); value != nil {
+			return json.Unmarshal(value, &edits)
+		}
+		return nil
 	})
-	return playlists, err
+	if err != nil {
+		return Edits{}, fmt.Errorf("read playlist edits: %w", err)
+	}
+	return edits, nil
 }
 
-func (store *Store) SavePlaylist(playlist youtubemusic.Playlist) error {
-	data, err := json.Marshal(playlist)
+func (store *Store) SaveEdits(playlistID string, edits Edits) error {
+	data, err := json.Marshal(edits)
 	if err != nil {
 		return err
 	}
-	return store.db.Update(func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists(playlistsBucket)
+	err = store.db.Update(func(tx *bolt.Tx) error {
+		bucket, err := tx.CreateBucketIfNotExists(editsBucket)
 		if err != nil {
 			return err
 		}
-		return bucket.Put([]byte(playlist.ID), data)
+		return bucket.Put([]byte(playlistID), data)
 	})
-}
-
-func (store *Store) DeletePlaylist(id string) error {
-	return store.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(playlistsBucket)
-		if bucket == nil {
-			return nil
-		}
-		return bucket.Delete([]byte(id))
-	})
+	if err != nil {
+		return fmt.Errorf("save playlist edits: %w", err)
+	}
+	return nil
 }
 
 func (store *Store) Close() error {

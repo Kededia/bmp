@@ -387,6 +387,32 @@ func (m *Model) queueBrowsedPlaylist() {
 	m.youtubeMusicShuffleHistory = nil
 	m.youtubeMusicFailed = nil
 	m.musicRestoreTrackIndex = -1
+	m.syncSearchRow()
+}
+
+// syncSearchRow lists search results being played at the top of the library,
+// so the playing playlist can always be found and reopened there.
+func (m *Model) syncSearchRow() {
+	selectedID := ""
+	if m.youtubeMusicPlaylistSelected >= 0 && m.youtubeMusicPlaylistSelected < len(m.youtubeMusicPlaylists) {
+		selectedID = m.youtubeMusicPlaylists[m.youtubeMusicPlaylistSelected].ID
+	}
+	playlists := make([]youtubemusic.Playlist, 0, len(m.youtubeMusicPlaylists)+1)
+	if searchPlaylist(m.youtubeMusicQueue) {
+		playlists = append(playlists, m.youtubeMusicQueue)
+	}
+	for _, playlist := range m.youtubeMusicPlaylists {
+		if !searchPlaylist(playlist) {
+			playlists = append(playlists, playlist)
+		}
+	}
+	m.youtubeMusicPlaylists = playlists
+	m.youtubeMusicPlaylistSelected = 0
+	for index, playlist := range playlists {
+		if playlist.ID == selectedID {
+			m.youtubeMusicPlaylistSelected = index
+		}
+	}
 }
 
 // browsingQueue reports whether the open playlist is the queue, so its rows

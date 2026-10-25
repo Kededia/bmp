@@ -61,13 +61,11 @@ type youtubeMusicDeleteTarget int
 const (
 	youtubeMusicDeleteNone youtubeMusicDeleteTarget = iota
 	youtubeMusicDeleteTrack
-	youtubeMusicDeletePlaylist
 )
 
 const (
-	playlistScroll   = "playlists"
-	trackScroll      = "tracks"
-	localTrackScroll = "local-tracks"
+	playlistScroll = "playlists"
+	trackScroll    = "tracks"
 )
 
 type settingsSavedMsg struct {
@@ -102,17 +100,13 @@ type Model struct {
 	youtubeMusicPlaylist         youtubemusic.Playlist
 	// youtubeMusicQueue is the playlist playback runs from. The playing, loop,
 	// pending and shuffle-history positions index it, not the open playlist.
-	youtubeMusicQueue             youtubemusic.Playlist
-	youtubeMusicShuffleHistory    []int
-	youtubeMusicShuffleBack       bool
-	youtubeMusicLocalPlaylists    []youtubemusic.Playlist
+	youtubeMusicQueue          youtubemusic.Playlist
+	youtubeMusicShuffleHistory []int
+	youtubeMusicShuffleBack    bool
+	// youtubeMusicEdits are the open playlist's edits made in BMP.
+	youtubeMusicEdits             musicstore.Edits
 	youtubeMusicTrackSelected     int
 	youtubeMusicView              youtubeMusicView
-	youtubeMusicAddingLocal       bool
-	youtubeMusicLocalTracks       []musiccache.LocalTrack
-	youtubeMusicLocalSelected     int
-	youtubeMusicLocalSearch       textinput.Model
-	youtubeMusicLocalSearching    bool
 	youtubeMusicSearchOpen        bool
 	youtubeMusicSearchAdding      bool
 	youtubeMusicSearchInput       textinput.Model
@@ -121,9 +115,8 @@ type Model struct {
 	youtubeMusicSearchGeneration  int
 	youtubeMusicSearchLoading     bool
 	youtubeMusicSearchErr         error
-	youtubeMusicURLPrompt         bool
+	youtubeMusicSearchLocal       []musiccache.LocalTrack
 	youtubeMusicURLResolving      bool
-	youtubeMusicURLInput          textinput.Model
 	youtubeMusicDeletePending     youtubeMusicDeleteTarget
 	youtubeMusicDeleteStatus      string
 	youtubeMusicDeleteStatusError bool
@@ -164,7 +157,6 @@ type Model struct {
 	settingsLastSaved             time.Time
 	settingsGeneration            int
 	musicRestorePending           bool
-	musicRestoreLocalPlaylist     youtubemusic.Playlist
 	musicRestoreTrackIndex        int
 	musicRestorePosition          time.Duration
 	musicRestorePaused            bool
@@ -185,18 +177,6 @@ func New() Model {
 	persistedSettings, settingsError := settings.Load()
 	selectedTheme := themeByName(persistedSettings.Theme)
 
-	musicURLInput := textinput.New()
-	musicURLInput.Prompt = "url> "
-	musicURLInput.Placeholder = "YouTube or YouTube Music URL"
-	musicURLInput.CharLimit = 2048
-	applyTextInputTheme(&musicURLInput, selectedTheme)
-
-	localSearchInput := textinput.New()
-	localSearchInput.Prompt = "search> "
-	localSearchInput.Placeholder = "title or artist"
-	localSearchInput.CharLimit = 256
-	applyTextInputTheme(&localSearchInput, selectedTheme)
-
 	searchInput := textinput.New()
 	searchInput.Prompt = "search> "
 	searchInput.Placeholder = "song, artist or album"
@@ -210,29 +190,6 @@ func New() Model {
 
 	musicCache, musicCacheError := musiccache.NewFromEnvironment(persistedSettings.MusicDir)
 	musicStore, musicStoreError := musicstore.New()
-	var localPlaylists []youtubemusic.Playlist
-	if musicStoreError == nil {
-		localPlaylists, musicStoreError = musicStore.Playlists()
-	}
-	if musicStoreError == nil && musicCacheError == nil {
-		if cachedTracks, err := musicCache.Tracks(); err == nil && applyCachedTrackArtists(localPlaylists, cachedTracks) {
-			for _, playlist := range localPlaylists {
-				if err := musicStore.SavePlaylist(playlist); err != nil {
-					musicStoreError = err
-					break
-				}
-			}
-		}
-	}
-	var localRestorePlaylist youtubemusic.Playlist
-	if persistedSettings.Music.Valid {
-		for _, playlist := range localPlaylists {
-			if playlist.ID == persistedSettings.Music.PlaylistID {
-				localRestorePlaylist = playlist
-				break
-			}
-		}
-	}
 	spectrumAnalyzer := spectrum.New()
 	appContext, appCancel := context.WithCancel(context.Background())
 	m := Model{
@@ -243,8 +200,6 @@ func New() Model {
 		setupOpen:                  setupNeeded(persistedSettings.Browser),
 		setupFolder:                setupFolderInput,
 		youtubeMusicLoading:        !setupNeeded(persistedSettings.Browser),
-		youtubeMusicPlaylists:      append([]youtubemusic.Playlist(nil), localPlaylists...),
-		youtubeMusicLocalPlaylists: localPlaylists,
 		youtubeMusicPlayingIndex:   -1,
 		youtubeMusicLoopTrackIndex: -1,
 		youtubeMusicShuffle:        persistedSettings.Shuffle,
@@ -260,14 +215,11 @@ func New() Model {
 		youtubeMusicPlayCounts:     make(map[string]uint64),
 		spectrumAnalyzer:           spectrumAnalyzer,
 		listScroll:                 make(map[string]int),
-		youtubeMusicURLInput:       musicURLInput,
-		youtubeMusicLocalSearch:    localSearchInput,
 		youtubeMusicSearchInput:    searchInput,
 		persistedSettings:          persistedSettings,
 		settingsErr:                settingsError,
 		settingsLastSaved:          time.Now(),
 		musicRestorePending:        persistedSettings.Music.Valid,
-		musicRestoreLocalPlaylist:  localRestorePlaylist,
 		musicRestoreTrackIndex:     -1,
 	}
 	m.terminalTitle = m.windowTitle()
@@ -296,8 +248,6 @@ func (m *Model) applyTheme(selected theme.Theme) {
 	m.persistedSettings.Theme = selected.Name
 	m.settingsDirty = true
 	m.settingsGeneration++
-	applyTextInputTheme(&m.youtubeMusicURLInput, selected)
-	applyTextInputTheme(&m.youtubeMusicLocalSearch, selected)
 	applyTextInputTheme(&m.youtubeMusicSearchInput, selected)
 	applyTextInputTheme(&m.setupFolder, selected)
 }
@@ -314,10 +264,6 @@ func (m Model) Init() tea.Cmd {
 	commands := []tea.Cmd{tea.SetWindowTitle(m.terminalTitle), tick(), readMusicCacheSize(m.youtubeMusicCache)}
 	if !m.setupOpen {
 		commands = append(commands, readYouTubeMusicLibrary(m.appContext, m.persistedSettings.Browser))
-	}
-	if m.musicRestoreLocalPlaylist.ID != "" {
-		playlist := m.musicRestoreLocalPlaylist
-		commands = append(commands, func() tea.Msg { return youtubeMusicPlaylistMsg{playlist: playlist} })
 	}
 	return tea.Batch(commands...)
 }
@@ -390,7 +336,6 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.youtubeMusicURLInput.Width = max(10, m.width-10)
 		m.youtubeMusicSearchInput.Width = max(10, m.width-13)
 
 	case tickMsg:
@@ -445,17 +390,9 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		m.youtubeMusicErr = msg.err
 		m.youtubeMusicClient = msg.client
 		m.youtubeMusicAccount = msg.account
-		m.youtubeMusicPlaylists = append(append([]youtubemusic.Playlist(nil), msg.playlists...), m.youtubeMusicLocalPlaylists...)
+		m.youtubeMusicPlaylists = msg.playlists
 		m.youtubeMusicPlaylistSelected = min(m.youtubeMusicPlaylistSelected, max(0, len(m.youtubeMusicPlaylists)-1))
-		if m.youtubeMusicView == youtubeMusicPlaylistView && m.youtubeMusicPlaylist.Local {
-			for index, playlist := range m.youtubeMusicPlaylists {
-				if playlist.ID == m.youtubeMusicPlaylist.ID {
-					m.youtubeMusicPlaylistSelected = index
-					break
-				}
-			}
-			return m, nil
-		}
+		m.syncSearchRow()
 		m.youtubeMusicView = youtubeMusicLibraryView
 		m.youtubeMusicPlaylist = youtubemusic.Playlist{}
 		m.youtubeMusicTrackSelected = 0
@@ -467,12 +404,6 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				}
 				m.youtubeMusicPlaylistSelected = index
 				m.youtubeMusicLoading = true
-				if playlist.Local {
-					if playlist.ID == m.musicRestoreLocalPlaylist.ID {
-						return m, nil
-					}
-					return m, func() tea.Msg { return youtubeMusicPlaylistMsg{playlist: playlist} }
-				}
 				return m, readYouTubeMusicPlaylist(m.appContext, m.youtubeMusicClient, restoredPlaylistID)
 			}
 			m.musicRestorePending = false
@@ -486,6 +417,11 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		restoring := m.musicRestorePending && msg.err == nil && msg.playlist.ID == m.persistedSettings.Music.PlaylistID
 		m.musicRestorePending = false
 		if msg.err == nil {
+			m.youtubeMusicEdits = musicstore.Edits{}
+			if m.youtubeMusicStore != nil && !searchPlaylist(msg.playlist) {
+				m.youtubeMusicEdits, m.youtubeMusicStoreErr = m.youtubeMusicStore.Edits(msg.playlist.ID)
+			}
+			msg.playlist = applyEdits(msg.playlist, m.youtubeMusicEdits)
 			m.youtubeMusicPlaylist = msg.playlist
 			m.youtubeMusicTrackSelected = 0
 			if m.browsingQueue() {
@@ -561,6 +497,8 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			}
 			return m, tea.Batch(readMusicCacheSize(m.youtubeMusicCache), m.prefetchTracks())
 		}
+		// The running download's position moves with its song when songs move.
+		msg.trackIndex = m.youtubeMusicDownloadIndex
 		pending := msg.trackIndex == m.youtubeMusicPendingIndex && msg.trackIndex >= 0 && msg.trackIndex < len(m.youtubeMusicQueue.Tracks) &&
 			m.youtubeMusicQueue.Tracks[msg.trackIndex].VideoID == msg.videoID
 		m.youtubeMusicCacheStatus = msg
@@ -663,6 +601,9 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 	case youtubeMusicURLTrackMsg:
 		m.youtubeMusicURLResolving = false
 		m.youtubeMusicPlaybackErr = msg.err
+		if msg.err == nil && msg.playlistID == "" {
+			return m, m.playSearchTracks(msg.track.Title, []youtubemusic.Track{msg.track}, 0)
+		}
 		if msg.err == nil && msg.playlistID == m.youtubeMusicPlaylist.ID {
 			return m, m.addTrack(msg.track)
 		}
@@ -676,75 +617,6 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		}
 		if m.youtubeMusicSearchOpen {
 			return m, m.handleSearchKey(msg)
-		}
-		if m.youtubeMusicURLPrompt {
-			switch msg.String() {
-			case "esc":
-				m.youtubeMusicURLPrompt = false
-				m.youtubeMusicURLInput.Blur()
-				return m, nil
-			case "enter":
-				rawURL := strings.TrimSpace(m.youtubeMusicURLInput.Value())
-				if rawURL == "" {
-					return m, nil
-				}
-				m.youtubeMusicURLPrompt = false
-				m.youtubeMusicURLResolving = true
-				m.youtubeMusicURLInput.Blur()
-				m.youtubeMusicPlaybackErr = nil
-				return m, resolveYouTubeMusicURL(m.appContext, m.youtubeMusicClient, m.youtubeMusicPlaylist.ID, rawURL)
-			default:
-				var command tea.Cmd
-				m.youtubeMusicURLInput, command = m.youtubeMusicURLInput.Update(msg)
-				return m, command
-			}
-		}
-		if m.youtubeMusicAddingLocal {
-			filteredTracks := m.youtubeMusicFilteredLocalTracks()
-			switch msg.String() {
-			case "esc":
-				if m.youtubeMusicLocalSearching {
-					m.youtubeMusicLocalSearching = false
-					m.youtubeMusicLocalSearch.SetValue("")
-					m.youtubeMusicLocalSearch.Blur()
-					m.youtubeMusicLocalSelected = 0
-				} else {
-					m.youtubeMusicAddingLocal = false
-				}
-			case "backspace":
-				if m.youtubeMusicLocalSearching {
-					var command tea.Cmd
-					m.youtubeMusicLocalSearch, command = m.youtubeMusicLocalSearch.Update(msg)
-					m.youtubeMusicLocalSelected = 0
-					return m, command
-				}
-				m.youtubeMusicAddingLocal = false
-			case "/":
-				if !m.youtubeMusicLocalSearching {
-					m.youtubeMusicLocalSearching = true
-					return m, m.youtubeMusicLocalSearch.Focus()
-				}
-			case "up":
-				m.youtubeMusicLocalSelected = max(0, m.youtubeMusicLocalSelected-1)
-			case "down":
-				m.youtubeMusicLocalSelected = min(max(0, len(filteredTracks)-1), m.youtubeMusicLocalSelected+1)
-			case "enter":
-				if m.youtubeMusicLocalSelected >= 0 && m.youtubeMusicLocalSelected < len(filteredTracks) {
-					command := m.addCachedTrack(filteredTracks[m.youtubeMusicLocalSelected])
-					m.youtubeMusicAddingLocal = false
-					m.youtubeMusicLocalSearching = false
-					m.youtubeMusicLocalSearch.Blur()
-					return m, command
-				}
-			default:
-				if m.youtubeMusicLocalSearching {
-					var command tea.Cmd
-					m.youtubeMusicLocalSearch, command = m.youtubeMusicLocalSearch.Update(msg)
-					m.youtubeMusicLocalSelected = 0
-					return m, command
-				}
-			}
-			return m, nil
 		}
 		if m.paletteOpen {
 			switch msg.String() {
@@ -791,8 +663,10 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				selected := m.youtubeMusicPlaylists[m.youtubeMusicPlaylistSelected]
 				m.youtubeMusicLoading = true
 				m.youtubeMusicErr = nil
-				if selected.Local {
-					return m, func() tea.Msg { return youtubeMusicPlaylistMsg{playlist: selected} }
+				if selected.ID == m.youtubeMusicQueue.ID {
+					// The playing playlist opens as it plays, without a reload.
+					queue := m.youtubeMusicQueue
+					return m, func() tea.Msg { return youtubeMusicPlaylistMsg{playlist: queue} }
 				}
 				return m, readYouTubeMusicPlaylist(m.appContext, m.youtubeMusicClient, selected.ID)
 			}
@@ -879,25 +753,21 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			m.markSettingsDirty()
 			// The upcoming track depends on shuffle; pick and fetch it again.
 			return m, m.prefetchNextTrack()
-		case "a", "A":
-			if m.youtubeMusicView == youtubeMusicPlaylistView {
-				m.beginLocalTrackPicker()
-			}
 		case "/":
 			if !m.youtubeMusicLoading {
 				return m, m.openSearch()
 			}
-		case "u", "U":
+		case "pgup", "alt+up", "pgdown", "alt+down":
 			if m.youtubeMusicView == youtubeMusicPlaylistView {
-				m.youtubeMusicURLInput.SetValue("")
-				m.youtubeMusicURLPrompt = true
-				return m, m.youtubeMusicURLInput.Focus()
+				direction := 1
+				if msg.String() == "pgup" || msg.String() == "alt+up" {
+					direction = -1
+				}
+				return m, m.moveSelectedTrack(direction)
 			}
 		case "d", "D":
 			if m.youtubeMusicView == youtubeMusicPlaylistView {
 				m.beginYouTubeMusicDelete(youtubeMusicDeleteTrack)
-			} else {
-				m.beginYouTubeMusicDelete(youtubeMusicDeletePlaylist)
 			}
 		case "l", "L":
 			// Loop marks a queue position, so it applies only while browsing the queue.
@@ -958,15 +828,11 @@ func (m Model) View() string {
 		if m.youtubeMusicPlayback.State == playback.StatePlaying {
 			playLabel = "pause"
 		}
-		hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: "play"}, {Key: "space", Label: playLabel}, {Key: "⇧←→", Label: "seek"}, {Key: "S", Label: "shuffle"}, {Key: "A", Label: "local"}, {Key: "U", Label: "url"}, {Key: "/", Label: "search"}, {Key: "D", Label: "remove"}, {Key: "⌫"}}
-		if m.youtubeMusicAddingLocal {
-			hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: "add"}, {Key: "/", Label: "search"}, {Key: "esc", Label: "cancel"}}
-			if m.youtubeMusicLocalSearching {
-				hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: "add"}, {Key: "esc", Label: "clear"}}
-			}
-		} else if m.youtubeMusicURLPrompt {
-			hints = []ui.Hint{{Key: "↵", Label: "add"}, {Key: "esc", Label: "cancel"}}
+		hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: "play"}, {Key: "space", Label: playLabel}, {Key: "⇧←→", Label: "seek"}, {Key: "S", Label: "shuffle"}, {Key: "/", Label: "search"}}
+		if m.editable() {
+			hints = append(hints[:len(hints)-1], ui.Hint{Key: "/", Label: "add"}, ui.Hint{Key: "PgUp/Dn", Label: "move"}, ui.Hint{Key: "D", Label: "remove"})
 		}
+		hints = append(hints, ui.Hint{Key: "⌫"})
 	}
 	folderSize := ""
 	if m.youtubeMusicCacheSize >= 0 {

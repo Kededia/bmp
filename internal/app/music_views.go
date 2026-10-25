@@ -34,15 +34,8 @@ func (m Model) musicMainView(width, height int) string {
 
 func (m Model) youtubeMusicBrowserView(innerWidth, height int) string {
 	muted := lipgloss.NewStyle().Foreground(m.colors.Muted)
-	if m.youtubeMusicURLPrompt {
-		return lipgloss.NewStyle().Foreground(m.colors.Cyan).Bold(true).Render("ADD FROM URL") + "\n\n" +
-			m.youtubeMusicURLInput.View() + "\n\n" + muted.Render("Enter add  ·  Esc cancel")
-	}
 	if m.youtubeMusicURLResolving {
 		return lipgloss.NewStyle().Foreground(m.colors.Yellow).Bold(true).Render("Reading song from URL…")
-	}
-	if m.youtubeMusicAddingLocal {
-		return m.youtubeMusicLocalTrackPickerView(innerWidth, height)
 	}
 	if m.youtubeMusicSearchOpen {
 		return m.youtubeMusicSearchView(innerWidth, height)
@@ -95,56 +88,20 @@ func (m Model) youtubeMusicBrowserView(innerWidth, height int) string {
 		playlist := m.youtubeMusicPlaylists[index]
 		selected := index == selectedIndex
 		cursor := "  "
-		if selected {
+		if playlist.ID == m.youtubeMusicQueue.ID {
+			cursor = lipgloss.NewStyle().Foreground(m.colors.Green).Bold(true).Render("▶ ")
+		} else if selected {
 			cursor = lipgloss.NewStyle().Foreground(m.colors.Magenta).Bold(true).Render("> ")
 		}
-		origin := "YOUTUBE"
-		if playlist.Local {
-			origin = "LOCAL"
+		details := ""
+		if searchPlaylist(playlist) {
+			details = "  SEARCH"
 		}
-		details := "  " + origin
 		if playlist.TrackCount > 0 {
-			details += fmt.Sprintf("  ·  %d tracks", playlist.TrackCount)
+			details += fmt.Sprintf("  %d tracks", playlist.TrackCount)
 		}
 		available := max(8, innerWidth-2-lipgloss.Width(details))
 		title := lipgloss.NewStyle().Foreground(m.colors.Foreground).Bold(selected).Underline(selected).Render(truncate(playlist.Title, available))
-		lines = append(lines, cursor+title+muted.Render(details))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m Model) youtubeMusicLocalTrackPickerView(width, height int) string {
-	muted := lipgloss.NewStyle().Foreground(m.colors.Muted)
-	lines := []string{
-		lipgloss.NewStyle().Foreground(m.colors.Cyan).Bold(true).Render("ADD DOWNLOADED SONG"),
-	}
-	if m.youtubeMusicLocalSearching {
-		lines = append(lines, m.youtubeMusicLocalSearch.View())
-	}
-	filteredTracks := m.youtubeMusicFilteredLocalTracks()
-	if len(filteredTracks) == 0 {
-		message := "No downloaded songs found."
-		if len(m.youtubeMusicLocalTracks) > 0 {
-			message = "No songs match the search."
-		}
-		return strings.Join(append(lines, muted.Render(message)), "\n")
-	}
-	selectedIndex := min(max(0, m.youtubeMusicLocalSelected), len(filteredTracks)-1)
-	visible := max(1, height-lipgloss.Height(strings.Join(lines, "\n")))
-	start, end := m.selectionWindow(localTrackScroll, len(filteredTracks), selectedIndex, visible)
-	for index := start; index < end; index++ {
-		track := filteredTracks[index]
-		cursor := "  "
-		if index == selectedIndex {
-			cursor = lipgloss.NewStyle().Foreground(m.colors.Magenta).Bold(true).Render("> ")
-		}
-		details := track.Artist
-		if details != "" {
-			details = "  " + details
-		}
-		available := max(8, width-2-lipgloss.Width(details))
-		title := lipgloss.NewStyle().Foreground(m.colors.Foreground).Bold(index == selectedIndex).
-			Render(truncate(track.Title, available))
 		lines = append(lines, cursor+title+muted.Render(details))
 	}
 	return strings.Join(lines, "\n")
@@ -158,8 +115,8 @@ func (m Model) youtubeMusicPlaylistViewContent(header string, innerWidth, height
 		title = "Untitled playlist"
 	}
 	origin := "YOUTUBE"
-	if playlist.Local {
-		origin = "LOCAL"
+	if searchPlaylist(playlist) {
+		origin = "SEARCH"
 	}
 	lines := []string{
 		header,
