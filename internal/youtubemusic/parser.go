@@ -120,7 +120,7 @@ func parseTrackRenderers(payload any) []Track {
 		if title == "" {
 			return
 		}
-		track := Track{VideoID: videoID, Title: title, Available: videoID != ""}
+		track := Track{VideoID: videoID, Title: title, Available: videoID != "", SetVideoID: stringAt(renderer, "playlistItemData", "playlistSetVideoId")}
 		if thumbnails := arrayAt(renderer, "thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"); len(thumbnails) > 0 {
 			track.Thumbnail = stringAt(thumbnails[len(thumbnails)-1], "url")
 		}
@@ -336,6 +336,16 @@ func browseID(value any) string {
 		return direct
 	}
 	return findStringKey(value, "browseId")
+}
+
+func hasKey(value any, key string) bool {
+	found := false
+	walkObjects(value, func(object map[string]any) {
+		if _, ok := object[key]; ok {
+			found = true
+		}
+	})
+	return found
 }
 
 func findStringKey(value any, key string) string {

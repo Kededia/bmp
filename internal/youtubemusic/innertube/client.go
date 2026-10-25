@@ -129,6 +129,17 @@ func (client *Client) Browse(ctx context.Context, browseID, continuation string)
 	return client.call(ctx, "browse", body)
 }
 
+// CreatePlaylist creates a private playlist in the signed-in account.
+func (client *Client) CreatePlaylist(ctx context.Context, title string) (map[string]any, error) {
+	return client.call(ctx, "playlist/create", map[string]any{"title": title, "description": "", "privacyStatus": "PRIVATE"})
+}
+
+// EditPlaylist applies actions, such as adding, removing or moving videos, to
+// a playlist the signed-in account owns.
+func (client *Client) EditPlaylist(ctx context.Context, playlistID string, actions []map[string]any) (map[string]any, error) {
+	return client.call(ctx, "browse/edit_playlist", map[string]any{"playlistId": playlistID, "actions": actions})
+}
+
 // Search invokes the search endpoint. Params selects a result filter.
 func (client *Client) Search(ctx context.Context, query, params string) (map[string]any, error) {
 	return client.call(ctx, "search", map[string]any{"query": query, "params": params})

@@ -49,7 +49,11 @@ func Panel(title, content string, width, height int, focused bool, colors theme.
 		}
 	}
 	if len(hints) > 0 {
+		// Hints that do not fit are dropped from the end rather than wrapped.
 		footer := Shortcuts(colors, hints...)
+		for count := len(hints) - 1; count > 0 && lipgloss.Width(footer) > width-2; count-- {
+			footer = Shortcuts(colors, hints[:count]...)
+		}
 		if gap := width - 2 - lipgloss.Width(footer) - lipgloss.Width(status); status != "" && gap >= 2 {
 			footer += lipgloss.NewStyle().Background(colors.Background).Render(strings.Repeat(" ", gap)) +
 				lipgloss.NewStyle().Foreground(colors.Muted).Background(colors.Background).Render(status)

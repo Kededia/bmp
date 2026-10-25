@@ -74,7 +74,11 @@ func (m Model) editable() bool {
 }
 
 // saveEdits stores the open playlist's edits, recording its current order.
+// An owned playlist keeps none: its changes go to YouTube Music.
 func (m *Model) saveEdits() {
+	if m.youtubeMusicPlaylist.Owned {
+		return
+	}
 	order := make([]string, 0, len(m.youtubeMusicPlaylist.Tracks))
 	for _, track := range m.youtubeMusicPlaylist.Tracks {
 		if track.VideoID != "" {
@@ -108,22 +112,27 @@ func (m *Model) addTrack(track youtubemusic.Track) tea.Cmd {
 		}
 	}
 	queued := m.browsingQueue()
-	m.youtubeMusicEdits.Removed = slices.DeleteFunc(m.youtubeMusicEdits.Removed, func(videoID string) bool { return videoID == track.VideoID })
-	m.youtubeMusicEdits.Added = append(withoutTrack(m.youtubeMusicEdits.Added, track.VideoID), track)
+	var sync tea.Cmd
+	if m.youtubeMusicPlaylist.Owned {
+		sync = m.queueSync(playlistSync{kind: "add", playlistID: m.youtubeMusicPlaylist.ID, videoID: track.VideoID})
+	} else {
+		m.youtubeMusicEdits.Removed = slices.DeleteFunc(m.youtubeMusicEdits.Removed, func(videoID string) bool { return videoID == track.VideoID })
+		m.youtubeMusicEdits.Added = append(withoutTrack(m.youtubeMusicEdits.Added, track.VideoID), track)
+	}
 	m.youtubeMusicPlaylist.Tracks = append(m.youtubeMusicPlaylist.Tracks, track)
 	m.youtubeMusicPlaylist.TrackCount = len(m.youtubeMusicPlaylist.Tracks)
 	m.saveEdits()
 	m.youtubeMusicTrackSelected = len(m.youtubeMusicPlaylist.Tracks) - 1
 	if !queued {
-		return nil
+		return sync
 	}
 	m.syncQueue()
 	if m.youtubeMusicShuffle {
 		// Keep the random pick that is already downloaded.
-		return nil
+		return sync
 	}
 	// The new track becomes next when the last one is playing.
-	return m.prefetchNextTrack()
+	return tea.Batch(sync, m.prefetchNextTrack())
 }
 
 // moveSelectedTrack swaps the selected song with its neighbor in direction.
@@ -137,16 +146,24 @@ func (m *Model) moveSelectedTrack(direction int) tea.Cmd {
 	tracks[from], tracks[to] = tracks[to], tracks[from]
 	m.youtubeMusicTrackSelected = to
 	m.saveEdits()
+	var sync tea.Cmd
+	if m.youtubeMusicPlaylist.Owned {
+		before := ""
+		if to+1 < len(tracks) {
+			before = tracks[to+1].VideoID
+		}
+		sync = m.queueSync(playlistSync{kind: "move", playlistID: m.youtubeMusicPlaylist.ID, videoID: tracks[to].VideoID, beforeVideoID: before})
+	}
 	if !m.browsingQueue() {
-		return nil
+		return sync
 	}
 	m.swapQueuePositions(from, to)
 	m.syncQueue()
 	if m.youtubeMusicShuffle {
-		return nil
+		return sync
 	}
 	// A song moved right after the playing one plays next.
-	return m.prefetchNextTrack()
+	return tea.Batch(sync, m.prefetchNextTrack())
 }
 
 // swapQueuePositions keeps the queue's positions on the same songs after the
@@ -187,8 +204,13 @@ func (m *Model) removeSelectedTrack() tea.Cmd {
 		return nil
 	}
 	videoID := m.youtubeMusicPlaylist.Tracks[index].VideoID
-	m.youtubeMusicEdits.Added = withoutTrack(m.youtubeMusicEdits.Added, videoID)
-	m.youtubeMusicEdits.Removed = append(m.youtubeMusicEdits.Removed, videoID)
+	var sync tea.Cmd
+	if m.youtubeMusicPlaylist.Owned {
+		sync = m.queueSync(playlistSync{kind: "remove", playlistID: m.youtubeMusicPlaylist.ID, videoID: videoID})
+	} else {
+		m.youtubeMusicEdits.Added = withoutTrack(m.youtubeMusicEdits.Added, videoID)
+		m.youtubeMusicEdits.Removed = append(m.youtubeMusicEdits.Removed, videoID)
+	}
 	m.youtubeMusicPlaylist.Tracks = append(
 		m.youtubeMusicPlaylist.Tracks[:index], m.youtubeMusicPlaylist.Tracks[index+1:]...,
 	)
@@ -196,7 +218,7 @@ func (m *Model) removeSelectedTrack() tea.Cmd {
 	m.youtubeMusicTrackSelected = min(index, max(0, len(m.youtubeMusicPlaylist.Tracks)-1))
 	m.saveEdits()
 	if !queued {
-		return nil
+		return sync
 	}
 	// Queue positions after index shift, so the running download, the
 	// shuffle history and the failed tracks no longer match.
@@ -214,7 +236,7 @@ func (m *Model) removeSelectedTrack() tea.Cmd {
 		m.youtubeMusicLoopTrackIndex = -1
 	}
 	m.syncQueue()
-	return m.prefetchNextTrack()
+	return tea.Batch(sync, m.prefetchNextTrack())
 }
 
 // syncQueue copies an edit of the open playlist into the queue it shows.

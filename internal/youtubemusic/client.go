@@ -31,6 +31,9 @@ type Track struct {
 	Duration  time.Duration
 	Available bool
 	Thumbnail string `json:",omitempty"`
+	// SetVideoID identifies the song's entry in a playlist, which YouTube
+	// Music needs to remove or move it.
+	SetVideoID string `json:",omitempty"`
 }
 
 type Playlist struct {
@@ -38,6 +41,9 @@ type Playlist struct {
 	Title      string
 	TrackCount int
 	Tracks     []Track
+	// Owned is set for playlists the account owns, which BMP edits on
+	// YouTube Music itself.
+	Owned bool
 }
 
 type Client struct {
@@ -170,6 +176,7 @@ func (client *Client) GetPlaylist(ctx context.Context, id string) (Playlist, err
 	// requested ID is the only authoritative playlist identity.
 	playlist.ID = strings.TrimPrefix(browseID, "VL")
 	playlist.Tracks = append(playlist.Tracks, parseTracks(payload)...)
+	playlist.Owned = hasKey(payload, "musicEditablePlaylistDetailHeaderRenderer")
 	continuation := findPlaylistContinuation(payload)
 	seen := make(map[string]bool)
 	for page := 1; continuation != "" && page < maxPlaylistPages; page++ {
@@ -194,6 +201,66 @@ func (client *Client) GetPlaylist(ctx context.Context, id string) (Playlist, err
 		return Playlist{}, ErrUnavailable
 	}
 	return playlist, nil
+}
+
+// CreatePlaylist creates a private playlist named title.
+func (client *Client) CreatePlaylist(ctx context.Context, title string) (Playlist, error) {
+	if client == nil || client.api == nil {
+		return Playlist{}, errors.New("YouTube Music client is not configured")
+	}
+	payload, err := client.api.CreatePlaylist(ctx, title)
+	if err != nil {
+		return Playlist{}, classifyError(err)
+	}
+	id := stringValue(payload["playlistId"])
+	if id == "" {
+		return Playlist{}, errors.New("YouTube Music did not create the playlist")
+	}
+	return Playlist{ID: id, Title: title, Owned: true}, nil
+}
+
+// AddToPlaylist adds a song to an owned playlist and returns its entry's ID.
+func (client *Client) AddToPlaylist(ctx context.Context, playlistID, videoID string) (string, error) {
+	payload, err := client.editPlaylist(ctx, playlistID, map[string]any{
+		"action": "ACTION_ADD_VIDEO", "addedVideoId": videoID, "dedupeOption": "DEDUPE_OPTION_SKIP",
+	})
+	if err != nil {
+		return "", err
+	}
+	return findStringKey(payload, "setVideoId"), nil
+}
+
+// RemoveFromPlaylist removes a song's entry from an owned playlist.
+func (client *Client) RemoveFromPlaylist(ctx context.Context, playlistID, videoID, setVideoID string) error {
+	_, err := client.editPlaylist(ctx, playlistID, map[string]any{
+		"action": "ACTION_REMOVE_VIDEO", "removedVideoId": videoID, "setVideoId": setVideoID,
+	})
+	return err
+}
+
+// MoveInPlaylist moves an entry of an owned playlist before another entry,
+// or to the end when before is empty.
+func (client *Client) MoveInPlaylist(ctx context.Context, playlistID, setVideoID, before string) error {
+	action := map[string]any{"action": "ACTION_MOVE_VIDEO_BEFORE", "setVideoId": setVideoID}
+	if before != "" {
+		action["movedSetVideoIdSuccessor"] = before
+	}
+	_, err := client.editPlaylist(ctx, playlistID, action)
+	return err
+}
+
+func (client *Client) editPlaylist(ctx context.Context, playlistID string, action map[string]any) (map[string]any, error) {
+	if client == nil || client.api == nil {
+		return nil, errors.New("YouTube Music client is not configured")
+	}
+	payload, err := client.api.EditPlaylist(ctx, playlistID, []map[string]any{action})
+	if err != nil {
+		return nil, classifyError(err)
+	}
+	if status := stringValue(payload["status"]); status != "STATUS_SUCCEEDED" {
+		return nil, fmt.Errorf("YouTube Music did not change the playlist (%s)", status)
+	}
+	return payload, nil
 }
 
 // songsFilter is the search params YouTube Music's Songs filter sends.

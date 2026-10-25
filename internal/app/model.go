@@ -112,6 +112,11 @@ type Model struct {
 	youtubeMusicEdits             musicstore.Edits
 	youtubeMusicTrackSelected     int
 	youtubeMusicView              youtubeMusicView
+	youtubeMusicNaming            bool
+	youtubeMusicNameInput         textinput.Model
+	youtubeMusicSyncs             []playlistSync
+	youtubeMusicSyncing           bool
+	youtubeMusicEntryIDs          map[string]string
 	youtubeMusicSearchOpen        bool
 	youtubeMusicSearchAdding      bool
 	youtubeMusicSearchInput       textinput.Model
@@ -171,7 +176,10 @@ type Model struct {
 	musicRestorePaused            bool
 }
 
-var themeCommands = []theme.Theme{theme.Cyberpunk, theme.Phosphor, theme.Amethyst, theme.Nord}
+var themeCommands = []theme.Theme{
+	theme.Cyberpunk, theme.Phosphor, theme.Amethyst, theme.Nord,
+	theme.Synthwave, theme.Ember, theme.Glacier, theme.Acid, theme.Gold,
+}
 
 func themeByName(name string) theme.Theme {
 	for _, candidate := range themeCommands {
@@ -191,6 +199,11 @@ func New() Model {
 	searchInput.Placeholder = "song, artist or album"
 	searchInput.CharLimit = 256
 	applyTextInputTheme(&searchInput, selectedTheme)
+
+	nameInput := textinput.New()
+	nameInput.Prompt = "name> "
+	nameInput.CharLimit = 150
+	applyTextInputTheme(&nameInput, selectedTheme)
 
 	setupFolderInput := textinput.New()
 	setupFolderInput.Prompt = "folder> "
@@ -226,6 +239,8 @@ func New() Model {
 		coverRender:                &coverRender{},
 		listScroll:                 make(map[string]int),
 		youtubeMusicSearchInput:    searchInput,
+		youtubeMusicNameInput:      nameInput,
+		youtubeMusicEntryIDs:       make(map[string]string),
 		persistedSettings:          persistedSettings,
 		settingsErr:                settingsError,
 		settingsLastSaved:          time.Now(),
@@ -259,6 +274,7 @@ func (m *Model) applyTheme(selected theme.Theme) {
 	m.settingsDirty = true
 	m.settingsGeneration++
 	applyTextInputTheme(&m.youtubeMusicSearchInput, selected)
+	applyTextInputTheme(&m.youtubeMusicNameInput, selected)
 	applyTextInputTheme(&m.setupFolder, selected)
 }
 
@@ -432,9 +448,11 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		m.musicRestorePending = false
 		if msg.err == nil {
 			m.youtubeMusicEdits = musicstore.Edits{}
-			if m.youtubeMusicStore != nil && !searchPlaylist(msg.playlist) {
+			// Owned playlists change on YouTube Music itself, so they keep no edits.
+			if m.youtubeMusicStore != nil && !searchPlaylist(msg.playlist) && !msg.playlist.Owned {
 				m.youtubeMusicEdits, m.youtubeMusicStoreErr = m.youtubeMusicStore.Edits(msg.playlist.ID)
 			}
+			m.rememberEntries(msg.playlist)
 			msg.playlist = applyEdits(msg.playlist, m.youtubeMusicEdits)
 			m.youtubeMusicPlaylist = msg.playlist
 			m.youtubeMusicTrackSelected = 0
@@ -632,6 +650,12 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 	case coverMsg:
 		m.handleCover(msg)
 
+	case playlistSyncMsg:
+		return m, m.handleSync(msg)
+
+	case playlistCreatedMsg:
+		m.handleCreated(msg)
+
 	case resumeMsg:
 		return m, m.resumeFromCache()
 
@@ -660,6 +684,9 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		}
 		if m.youtubeMusicSearchOpen {
 			return m, m.handleSearchKey(msg)
+		}
+		if m.youtubeMusicNaming {
+			return m, m.handleNameKey(msg)
 		}
 		if m.paletteOpen {
 			switch msg.String() {
@@ -800,6 +827,10 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			if !m.youtubeMusicLoading {
 				return m, m.openSearch()
 			}
+		case "n", "N":
+			if m.youtubeMusicView == youtubeMusicLibraryView && !m.youtubeMusicLoading && m.youtubeMusicClient != nil {
+				return m, m.beginNewPlaylist()
+			}
 		case "pgup", "alt+up", "pgdown", "alt+down":
 			if m.youtubeMusicView == youtubeMusicPlaylistView {
 				direction := 1
@@ -857,8 +888,21 @@ func (m Model) View() string {
 		return enforceThemeBackground(m.paletteView(), m.colors.Background)
 	}
 
-	hints := []ui.Hint{{Key: "↑↓", Label: "select"}, {Key: "↵", Label: "open"}, {Key: "/", Label: "search"}, {Key: "^R", Label: "refresh"}}
-	if m.youtubeMusicSearchOpen {
+	// Hints go most useful first; the footer drops the last ones that do not fit.
+	playLabel := "play"
+	if m.youtubeMusicPlayback.State == playback.StatePlaying {
+		playLabel = "pause"
+	}
+	var playing []ui.Hint
+	if m.youtubeMusicPlayer != nil {
+		playing = []ui.Hint{{Key: "space", Label: playLabel}, {Key: "←→", Label: "track"}, {Key: "⇧←→", Label: "seek"}, {Key: "+-", Label: "volume"}, {Key: "M", Label: "mute"}, {Key: "S", Label: "shuffle"}}
+	}
+	general := []ui.Hint{{Key: "^P", Label: "menu"}, {Key: "^D", Label: "quit"}}
+	hints := []ui.Hint{{Key: "↑↓", Label: "select"}, {Key: "↵", Label: "open"}, {Key: "/", Label: "search"}, {Key: "N", Label: "new playlist"}}
+	hints = append(append(append(hints, playing...), ui.Hint{Key: "^R", Label: "refresh"}), general...)
+	if m.youtubeMusicNaming {
+		hints = []ui.Hint{{Key: "↵", Label: "create"}, {Key: "esc", Label: "cancel"}}
+	} else if m.youtubeMusicSearchOpen {
 		pick := "play"
 		if m.youtubeMusicSearchAdding {
 			pick = "add"
@@ -867,15 +911,16 @@ func (m Model) View() string {
 	} else if m.youtubeMusicDeletePending != youtubeMusicDeleteNone {
 		hints = []ui.Hint{{Key: "D", Label: "confirm delete"}, {Key: "esc", Label: "cancel"}}
 	} else if m.youtubeMusicView == youtubeMusicPlaylistView {
-		playLabel := "play"
-		if m.youtubeMusicPlayback.State == playback.StatePlaying {
-			playLabel = "pause"
-		}
-		hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: "play"}, {Key: "space", Label: playLabel}, {Key: "⇧←→", Label: "seek"}, {Key: "S", Label: "shuffle"}, {Key: "/", Label: "search"}}
+		hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: "play"}, {Key: "⌫", Label: "back"}}
 		if m.editable() {
-			hints = append(hints[:len(hints)-1], ui.Hint{Key: "/", Label: "add"}, ui.Hint{Key: "PgUp/Dn", Label: "move"}, ui.Hint{Key: "D", Label: "remove"})
+			hints = append(hints, ui.Hint{Key: "/", Label: "add"}, ui.Hint{Key: "PgUp/Dn", Label: "move"}, ui.Hint{Key: "D", Label: "remove"})
+		} else {
+			hints = append(hints, ui.Hint{Key: "/", Label: "search"})
 		}
-		hints = append(hints, ui.Hint{Key: "⌫"})
+		if m.browsingQueue() {
+			hints = append(hints, ui.Hint{Key: "L", Label: "loop"})
+		}
+		hints = append(append(hints, playing...), general...)
 	}
 	folderSize := ""
 	if m.youtubeMusicCacheSize >= 0 {

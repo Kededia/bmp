@@ -4,17 +4,16 @@ import "github.com/charmbracelet/lipgloss"
 
 // Theme contains BMP's semantic colors. Themes are compiled into the app for v1.
 type Theme struct {
-	Name          string
-	Background    lipgloss.Color
-	Foreground    lipgloss.Color
-	Muted         lipgloss.Color
-	Border        lipgloss.Color
-	Cyan          lipgloss.Color
-	Magenta       lipgloss.Color
-	Yellow        lipgloss.Color
-	Green         lipgloss.Color
-	Red           lipgloss.Color
-	ClipboardFade [6]lipgloss.Color
+	Name       string
+	Background lipgloss.Color
+	Foreground lipgloss.Color
+	Muted      lipgloss.Color
+	Border     lipgloss.Color
+	Cyan       lipgloss.Color
+	Magenta    lipgloss.Color
+	Yellow     lipgloss.Color
+	Green      lipgloss.Color
+	Red        lipgloss.Color
 }
 
 var Cyberpunk = Theme{
@@ -28,14 +27,6 @@ var Cyberpunk = Theme{
 	Yellow:     lipgloss.Color("#FFD166"),
 	Green:      lipgloss.Color("#7CFF6B"),
 	Red:        lipgloss.Color("#FF5470"),
-	ClipboardFade: [6]lipgloss.Color{
-		lipgloss.Color("#D8E8FF"),
-		lipgloss.Color("#C0D1E8"),
-		lipgloss.Color("#A9B9D0"),
-		lipgloss.Color("#91A1B8"),
-		lipgloss.Color("#7989A0"),
-		lipgloss.Color("#65728A"),
-	},
 }
 
 var Phosphor = Theme{
@@ -49,14 +40,6 @@ var Phosphor = Theme{
 	Yellow:     lipgloss.Color("#E2FF6B"),
 	Green:      lipgloss.Color("#39FF70"),
 	Red:        lipgloss.Color("#FF667D"),
-	ClipboardFade: [6]lipgloss.Color{
-		lipgloss.Color("#D8FFE2"),
-		lipgloss.Color("#BDDFC5"),
-		lipgloss.Color("#A2C0A9"),
-		lipgloss.Color("#87A18D"),
-		lipgloss.Color("#6C8271"),
-		lipgloss.Color("#527A5C"),
-	},
 }
 
 // Amethyst is a rich purple theme with soft lavender accents.
@@ -71,14 +54,6 @@ var Amethyst = Theme{
 	Yellow:     lipgloss.Color("#F0C6FF"),
 	Green:      lipgloss.Color("#A7E8D0"),
 	Red:        lipgloss.Color("#FF7FA5"),
-	ClipboardFade: [6]lipgloss.Color{
-		lipgloss.Color("#F3E8FF"),
-		lipgloss.Color("#DFCEED"),
-		lipgloss.Color("#CBB4DB"),
-		lipgloss.Color("#B79AC9"),
-		lipgloss.Color("#A380B7"),
-		lipgloss.Color("#9277AA"),
-	},
 }
 
 // Nord is a low-glare arctic theme with a deep blue background.
@@ -93,12 +68,74 @@ var Nord = Theme{
 	Yellow:     lipgloss.Color("#EBCB8B"),
 	Green:      lipgloss.Color("#A3BE8C"),
 	Red:        lipgloss.Color("#BF616A"),
-	ClipboardFade: [6]lipgloss.Color{
-		lipgloss.Color("#D8DEE9"),
-		lipgloss.Color("#C1C9D6"),
-		lipgloss.Color("#AAB4C3"),
-		lipgloss.Color("#93A0B0"),
-		lipgloss.Color("#7C8B9D"),
-		lipgloss.Color("#65738B"),
-	},
+}
+
+// Synthwave is a high-contrast theme: hot pink and sunset orange on black, after 1980s neon.
+var Synthwave = Theme{
+	Name:       "Synthwave",
+	Background: lipgloss.Color("#000000"),
+	Foreground: lipgloss.Color("#FFE9FA"),
+	Muted:      lipgloss.Color("#8A6A8F"),
+	Border:     lipgloss.Color("#3E2448"),
+	Cyan:       lipgloss.Color("#2DE2E6"),
+	Magenta:    lipgloss.Color("#FF2BD6"),
+	Yellow:     lipgloss.Color("#FF9E2C"),
+	Green:      lipgloss.Color("#4DFF9E"),
+	Red:        lipgloss.Color("#FF3864"),
+}
+
+// Ember is a high-contrast theme: fire red and amber on black.
+var Ember = Theme{
+	Name:       "Ember",
+	Background: lipgloss.Color("#000000"),
+	Foreground: lipgloss.Color("#FFEBDC"),
+	Muted:      lipgloss.Color("#8C6A58"),
+	Border:     lipgloss.Color("#4A2A1A"),
+	Cyan:       lipgloss.Color("#FFB000"),
+	Magenta:    lipgloss.Color("#FF4D1A"),
+	Yellow:     lipgloss.Color("#FFE066"),
+	Green:      lipgloss.Color("#B8FF3A"),
+	Red:        lipgloss.Color("#FF2E4E"),
+}
+
+// Glacier is a high-contrast theme: ice blue and white on black.
+var Glacier = Theme{
+	Name:       "Glacier",
+	Background: lipgloss.Color("#000000"),
+	Foreground: lipgloss.Color("#EAFBFF"),
+	Muted:      lipgloss.Color("#62808E"),
+	Border:     lipgloss.Color("#1F3A48"),
+	Cyan:       lipgloss.Color("#00E5FF"),
+	Magenta:    lipgloss.Color("#8C9EFF"),
+	Yellow:     lipgloss.Color("#FFF27A"),
+	Green:      lipgloss.Color("#2BFFB0"),
+	Red:        lipgloss.Color("#FF4F6D"),
+}
+
+// Acid is a high-contrast theme: lime and electric purple on black.
+var Acid = Theme{
+	Name:       "Acid",
+	Background: lipgloss.Color("#000000"),
+	Foreground: lipgloss.Color("#F2FFE4"),
+	Muted:      lipgloss.Color("#6E8058"),
+	Border:     lipgloss.Color("#2F4420"),
+	Cyan:       lipgloss.Color("#C6FF00"),
+	Magenta:    lipgloss.Color("#B026FF"),
+	Yellow:     lipgloss.Color("#FFF200"),
+	Green:      lipgloss.Color("#39FF14"),
+	Red:        lipgloss.Color("#FF2079"),
+}
+
+// Gold is a high-contrast theme: gold and warm white on black.
+var Gold = Theme{
+	Name:       "Gold",
+	Background: lipgloss.Color("#000000"),
+	Foreground: lipgloss.Color("#FFF6E0"),
+	Muted:      lipgloss.Color("#8C7A55"),
+	Border:     lipgloss.Color("#4A3D1F"),
+	Cyan:       lipgloss.Color("#FFD700"),
+	Magenta:    lipgloss.Color("#FFB347"),
+	Yellow:     lipgloss.Color("#FFF1A8"),
+	Green:      lipgloss.Color("#C6F432"),
+	Red:        lipgloss.Color("#FF5A36"),
 }
