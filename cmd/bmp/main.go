@@ -20,7 +20,7 @@ func main() {
 	}
 	prepareTools()
 	model := app.New()
-	program := tea.NewProgram(model, tea.WithAltScreen())
+	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithOutput(syncedOutput{os.Stdout}))
 	finalModel, err := program.Run()
 	if final, ok := finalModel.(app.Model); ok {
 		final.Close()
@@ -31,6 +31,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, "bmp: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// syncedOutput wraps each frame Bubble Tea writes, one write per frame, in a
+// synchronized update, so the terminal shows the frame whole. Otherwise it
+// can show a line redrawn over the album cover before the cover drawn after
+// it. Terminals without synchronized updates ignore the markers.
+type syncedOutput struct {
+	*os.File
+}
+
+func (output syncedOutput) Write(data []byte) (int, error) {
+	frame := make([]byte, 0, len(data)+16)
+	frame = append(append(append(frame, "\x1b[?2026h"...), data...), "\x1b[?2026l"...)
+	if _, err := output.File.Write(frame); err != nil {
+		return 0, err
+	}
+	return len(data), nil
 }
 
 // prepareTools adds the executable's folder and its bin\ folder to PATH, where

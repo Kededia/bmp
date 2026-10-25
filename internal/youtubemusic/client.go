@@ -32,6 +32,7 @@ type Track struct {
 	Artists   []Artist
 	Duration  time.Duration
 	Available bool
+	Thumbnail string `json:",omitempty"`
 }
 
 type Playlist struct {

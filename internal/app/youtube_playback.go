@@ -189,6 +189,43 @@ func playCachedYouTubeMusicTrack(
 	}
 }
 
+type resumeMsg struct{}
+
+// resumeFromCache starts the saved song from the music folder at once,
+// rather than after signing in to YouTube Music and loading its playlist,
+// which takes seconds. Until the playlist replaces it, the queue holds only
+// this song.
+func (m *Model) resumeFromCache() tea.Cmd {
+	restored := m.persistedSettings.Music
+	if !restored.Valid || m.youtubeMusicCache == nil || m.youtubeMusicPlayer != nil || m.youtubeMusicResolving {
+		return nil
+	}
+	tracks, err := m.youtubeMusicCache.Tracks()
+	if err != nil {
+		return nil
+	}
+	for _, local := range tracks {
+		if local.VideoID != restored.VideoID {
+			continue
+		}
+		track := youtubemusic.Track{VideoID: local.VideoID, Title: local.Title, Available: true}
+		if local.Artist != "" {
+			track.Artists = []youtubemusic.Artist{{Name: local.Artist}}
+		}
+		queue := youtubemusic.Playlist{ID: restored.PlaylistID, TrackCount: 1, Tracks: []youtubemusic.Track{track}}
+		if searchPlaylist(queue) {
+			queue.Title = "Search: " + strings.TrimPrefix(queue.ID, "search:")
+		}
+		m.youtubeMusicQueue = queue
+		m.musicRestoreTrackIndex = 0
+		m.musicRestorePosition = max(0, time.Duration(restored.PositionMillis)*time.Millisecond)
+		m.musicRestorePaused = restored.Paused
+		m.syncSearchRow()
+		return m.beginCachedYouTubeTrack(0, local.Path)
+	}
+	return nil
+}
+
 // recoverMusicAfterSleep replaces the player session and any in-flight
 // download, which can hang after system sleep and block every later play
 // request, then reopens the current track paused at its last position.

@@ -28,6 +28,18 @@ func (m Model) musicMainView(width, height int) string {
 	visualizer := lipgloss.NewStyle().Width(spectrumWidth).Height(topHeight).Render(m.youtubeMusicSpectrumPanel(spectrumWidth, topHeight))
 	top := lipgloss.JoinHorizontal(lipgloss.Top, info, strings.Repeat(" ", gap), visualizer)
 	browserHeight := contentHeight - lipgloss.Height(top) - 2
+	// The playing song's cover fills the space under the spectrum.
+	if m.coverRender != nil {
+		m.coverRender.draw = ""
+	}
+	// One line short of the browser leaves a gap above the shortcut footer.
+	coverHeight := browserHeight - 1
+	if cols, rows := m.coverSize(spectrumWidth, coverHeight); cols > 0 && rows > 0 {
+		browser := lipgloss.NewStyle().Width(infoWidth).Height(browserHeight).Render(m.youtubeMusicBrowserView(infoWidth, browserHeight))
+		// The panel border puts content one row and one column in.
+		m.placeCover(1+lipgloss.Height(top)+2, 1+infoWidth+gap, spectrumWidth, coverHeight, cols, rows, browser)
+		return top + "\n\n" + lipgloss.JoinHorizontal(lipgloss.Top, browser, strings.Repeat(" ", gap), coverPlaceholder(spectrumWidth, coverHeight))
+	}
 	browser := m.youtubeMusicBrowserView(innerWidth, browserHeight)
 	return top + "\n\n" + browser
 }

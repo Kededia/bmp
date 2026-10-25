@@ -121,6 +121,9 @@ func parseTrackRenderers(payload any) []Track {
 			return
 		}
 		track := Track{VideoID: videoID, Title: title, Available: videoID != ""}
+		if thumbnails := arrayAt(renderer, "thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"); len(thumbnails) > 0 {
+			track.Thumbnail = stringAt(thumbnails[len(thumbnails)-1], "url")
+		}
 		if len(columns) > 1 {
 			for _, value := range runsAt(columns[1], "musicResponsiveListItemFlexColumnRenderer", "text") {
 				run, _ := value.(map[string]any)

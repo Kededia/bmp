@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"slices"
 	"strings"
 	"time"
 
@@ -149,6 +151,10 @@ type Model struct {
 	youtubeMusicStoreErr          error
 	youtubeMusicPlayCounts        map[string]uint64
 	spectrumAnalyzer              *spectrum.Analyzer
+	coverURL                      string
+	coverImageURL                 string
+	coverImage                    image.Image
+	coverRender                   *coverRender
 	spectrumTicking               bool
 	persistedSettings             settings.State
 	settingsErr                   error
@@ -214,6 +220,7 @@ func New() Model {
 		youtubeMusicStoreErr:       musicStoreError,
 		youtubeMusicPlayCounts:     make(map[string]uint64),
 		spectrumAnalyzer:           spectrumAnalyzer,
+		coverRender:                &coverRender{},
 		listScroll:                 make(map[string]int),
 		youtubeMusicSearchInput:    searchInput,
 		persistedSettings:          persistedSettings,
@@ -264,6 +271,9 @@ func (m Model) Init() tea.Cmd {
 	commands := []tea.Cmd{tea.SetWindowTitle(m.terminalTitle), tick(), readMusicCacheSize(m.youtubeMusicCache)}
 	if !m.setupOpen {
 		commands = append(commands, readYouTubeMusicLibrary(m.appContext, m.persistedSettings.Browser))
+	}
+	if m.persistedSettings.Music.Valid {
+		commands = append(commands, func() tea.Msg { return resumeMsg{} })
 	}
 	return tea.Batch(commands...)
 }
@@ -399,7 +409,8 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		if m.musicRestorePending && m.persistedSettings.Music.PlaylistID != "" {
 			restoredPlaylistID := m.persistedSettings.Music.PlaylistID
 			for index, playlist := range m.youtubeMusicPlaylists {
-				if playlist.ID != restoredPlaylistID {
+				// Search results are not saved, so only the resumed song remains of them.
+				if playlist.ID != restoredPlaylistID || searchPlaylist(playlist) {
 					continue
 				}
 				m.youtubeMusicPlaylistSelected = index
@@ -424,7 +435,9 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			msg.playlist = applyEdits(msg.playlist, m.youtubeMusicEdits)
 			m.youtubeMusicPlaylist = msg.playlist
 			m.youtubeMusicTrackSelected = 0
-			if m.browsingQueue() {
+			// The queue of a resumed song holds only that song until its
+			// playlist arrives here and replaces it.
+			if m.browsingQueue() && !restoring {
 				// Show the queue itself so its rows match the positions playback uses.
 				m.youtubeMusicPlaylist = m.youtubeMusicQueue
 				m.youtubeMusicPlaylist.Tracks = append([]youtubemusic.Track(nil), m.youtubeMusicQueue.Tracks...)
@@ -465,11 +478,16 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 					}
 				}
 				if index >= 0 {
+					// The song may already play, resumed from the music folder.
+					resumed := m.youtubeMusicPlayingVideoID == restored.VideoID || (m.youtubeMusicResolving && m.youtubeMusicPendingIndex < 0)
 					m.queueBrowsedPlaylist()
 					m.youtubeMusicTrackSelected = index
 					m.youtubeMusicLoopTrackIndex = restored.LoopTrackIndex
 					if m.youtubeMusicLoopTrackIndex < 0 || m.youtubeMusicLoopTrackIndex >= len(msg.playlist.Tracks) {
 						m.youtubeMusicLoopTrackIndex = -1
+					}
+					if resumed {
+						return m, tea.Batch(m.prefetchNextTrack(), m.coverCommand())
 					}
 					m.musicRestoreTrackIndex = index
 					m.musicRestorePosition = max(0, time.Duration(restored.PositionMillis)*time.Millisecond)
@@ -548,6 +566,11 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			m.youtubeMusicPlayer = msg.player
 		}
 		if msg.err == nil {
+			if index := msg.trackIndex; index < 0 || index >= len(m.youtubeMusicQueue.Tracks) || m.youtubeMusicQueue.Tracks[index].VideoID != msg.videoID {
+				// The queue changed while the song opened, as when a resumed
+				// song's playlist arrives; find the song in it.
+				msg.trackIndex = slices.IndexFunc(m.youtubeMusicQueue.Tracks, func(track youtubemusic.Track) bool { return track.VideoID == msg.videoID })
+			}
 			if previous := m.youtubeMusicPlayingIndex; previous != msg.trackIndex {
 				history := m.youtubeMusicShuffleHistory
 				if count := len(history); m.youtubeMusicShuffleBack && count > 0 && history[count-1] == msg.trackIndex {
@@ -578,7 +601,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				m.spectrumTicking = true
 				commands = append(commands, spectrumTick())
 			}
-			commands = append(commands, m.prefetchNextTrack())
+			commands = append(commands, m.prefetchNextTrack(), m.coverCommand())
 			return m, tea.Batch(commands...)
 		}
 
@@ -591,6 +614,12 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 
 	case setupCheckMsg:
 		return m, m.handleSetupCheck(msg)
+
+	case coverMsg:
+		m.handleCover(msg)
+
+	case resumeMsg:
+		return m, m.resumeFromCache()
 
 	case youtubeMusicSearchTickMsg:
 		return m, m.handleSearchTick(msg)
@@ -841,7 +870,7 @@ func (m Model) View() string {
 	panel := ui.Panel("MUSIC", m.musicMainView(m.width, m.height), m.width, m.height, true, m.colors, folderSize, hints...)
 
 	rendered := lipgloss.NewStyle().Background(m.colors.Background).Render(panel)
-	return enforceThemeBackground(rendered, m.colors.Background)
+	return m.withCover(enforceThemeBackground(rendered, m.colors.Background))
 }
 
 func (m Model) paletteView() string {
