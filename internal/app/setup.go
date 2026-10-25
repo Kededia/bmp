@@ -2,7 +2,7 @@ package app
 
 import (
 	"context"
-	"os"
+	"errors"
 	"strings"
 	"time"
 
@@ -25,21 +25,25 @@ type setupCheckMsg struct {
 	browser string
 	account youtubemusic.Account
 	err     error
+	// signedIn is set after the sign-in window, which is not opened twice.
+	signedIn bool
 }
 
-// setupBrowsers lists the Windows browsers yt-dlp can read cookies from.
+// setupBrowsers lists BMP's own sign-in window, then the Windows browsers
+// yt-dlp can read cookies from. Chrome is not among those: it encrypts its
+// cookies so only Chrome can read them, so Chrome users take the window.
 var setupBrowsers = []struct{ label, spec string }{
+	{"Sign-in window (any browser, Chrome included)", youtubemusic.ProfileBrowser},
 	{"Microsoft Edge", "edge"},
-	{"Google Chrome", "chrome"},
 	{"Mozilla Firefox", "firefox"},
 	{"Brave", "brave"},
 	{"Opera", "opera"},
 	{"Vivaldi", "vivaldi"},
 }
 
-// setupNeeded reports whether nothing tells BMP how to sign in yet.
+// setupNeeded reports whether setup has not run yet.
 func setupNeeded(browser string) bool {
-	return browser == "" && os.Getenv("YTMUSIC_BROWSER") == "" && os.Getenv("YTMUSIC_COOKIES") == ""
+	return browser == ""
 }
 
 func (m *Model) openSetup() {
@@ -59,7 +63,7 @@ func checkSetupBrowser(parent context.Context, browser string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
-		client, err := youtubemusic.NewForBrowser(ctx, browser)
+		client, err := youtubemusic.New(ctx, browser)
 		if err != nil {
 			return setupCheckMsg{browser: browser, err: err}
 		}
@@ -68,7 +72,26 @@ func checkSetupBrowser(parent context.Context, browser string) tea.Cmd {
 	}
 }
 
+// signInSetup opens BMP's sign-in window, then checks the sign-in.
+func signInSetup(parent context.Context) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(parent, 15*time.Minute)
+		defer cancel()
+		if err := youtubemusic.SignIn(ctx); err != nil {
+			return setupCheckMsg{browser: youtubemusic.ProfileBrowser, err: err, signedIn: true}
+		}
+		msg := checkSetupBrowser(parent, youtubemusic.ProfileBrowser)().(setupCheckMsg)
+		msg.signedIn = true
+		return msg
+	}
+}
+
 func (m *Model) handleSetupCheck(msg setupCheckMsg) tea.Cmd {
+	if errors.Is(msg.err, youtubemusic.ErrNotSignedIn) && !msg.signedIn {
+		m.setupStatus = "Sign in to YouTube Music in the browser window that opened, then close the window."
+		m.setupStatusError = false
+		return signInSetup(m.appContext)
+	}
 	m.setupChecking = false
 	if msg.err != nil {
 		m.setupStatus = msg.err.Error()
@@ -128,7 +151,7 @@ func (m *Model) handleSetupKey(msg tea.KeyMsg) tea.Cmd {
 func (m *Model) finishSetup() tea.Cmd {
 	folder := strings.TrimSpace(m.setupFolder.Value())
 	if m.youtubeMusicCache == nil || folder != m.youtubeMusicCache.Directory() {
-		cache, err := musiccache.NewFromEnvironment(folder)
+		cache, err := musiccache.New(folder)
 		if err != nil {
 			m.setupStatus = err.Error()
 			m.setupStatusError = true
@@ -159,7 +182,7 @@ func (m Model) setupView() string {
 	if m.setupStep == setupBrowserStep {
 		lines = append(lines,
 			lipgloss.NewStyle().Foreground(m.colors.Cyan).Bold(true).Render("STEP 1 OF 2  ·  BROWSER"),
-			muted.Render("BMP signs in to YouTube Music through your browser. Pick the one where you are signed in to music.youtube.com."),
+			muted.Render("BMP signs in to YouTube Music through a browser. The sign-in window works on any PC; you sign in once. Or pick a browser where you are already signed in to music.youtube.com."),
 			"",
 		)
 		for index, browser := range setupBrowsers {
@@ -183,6 +206,8 @@ func (m Model) setupView() string {
 	}
 	lines = append(lines, "")
 	switch {
+	case m.setupChecking && m.setupStatus != "":
+		lines = append(lines, lipgloss.NewStyle().Foreground(m.colors.Yellow).Render(m.setupStatus))
 	case m.setupChecking:
 		lines = append(lines, lipgloss.NewStyle().Foreground(m.colors.Yellow).Render("Checking "+setupBrowsers[m.setupSelected].label+" sign-in…"))
 	case m.setupStatus != "":
@@ -191,9 +216,6 @@ func (m Model) setupView() string {
 			color = m.colors.Red
 		}
 		lines = append(lines, lipgloss.NewStyle().Foreground(color).Render(m.setupStatus))
-	}
-	if os.Getenv("YTMUSIC_BROWSER") != "" || os.Getenv("YTMUSIC_COOKIES") != "" || os.Getenv("BMP_MUSIC_DIR") != "" {
-		lines = append(lines, muted.Render("Values set in .env take precedence over these choices."))
 	}
 	lines = append(lines, "", ui.Shortcuts(m.colors, hints...))
 	box := lipgloss.NewStyle().

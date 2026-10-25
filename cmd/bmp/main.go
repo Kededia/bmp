@@ -10,14 +10,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"bmp/internal/app"
-	"bmp/internal/configenv"
 )
 
 func main() {
-	if err := configenv.Load(); err != nil {
-		fmt.Fprintf(os.Stderr, "bmp: %v\n", err)
-		os.Exit(1)
-	}
 	prepareTools()
 	model := app.New()
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithOutput(syncedOutput{os.Stdout}))

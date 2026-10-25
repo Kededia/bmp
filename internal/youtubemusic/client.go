@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
@@ -47,46 +45,34 @@ type Client struct {
 	resolver *streamresolver.YTDLPResolver
 }
 
-// NewFromEnvironmentContext signs in with YTMUSIC_BROWSER or YTMUSIC_COOKIES
-// when either is set, else with browser, the one chosen in setup.
-func NewFromEnvironmentContext(ctx context.Context, browser string) (*Client, error) {
-	cookies := strings.TrimSpace(os.Getenv("YTMUSIC_COOKIES"))
-	if value := strings.TrimSpace(os.Getenv("YTMUSIC_BROWSER")); value != "" || cookies != "" {
-		browser = value
-	}
-	return newClient(ctx, browser, cookies)
+// ProfileBrowser is the browser setting for BMP's own sign-in window, which
+// works whichever browser is installed, Chrome included.
+const ProfileBrowser = auth.ProfileBrowser
+
+var ErrNotSignedIn = auth.ErrNotSignedIn
+
+// SignIn opens BMP's sign-in window and returns once the person signed in.
+func SignIn(ctx context.Context) error {
+	return auth.SignIn(ctx)
 }
 
-// NewForBrowser signs in with browser alone, so setup can check its choice
-// even when the environment would override it.
-func NewForBrowser(ctx context.Context, browser string) (*Client, error) {
-	return newClient(ctx, browser, "")
-}
-
-func newClient(ctx context.Context, browser, cookies string) (*Client, error) {
-	if browser = strings.TrimSpace(browser); browser != "" {
-		exported, err := auth.CookiesFromBrowser(ctx, browser)
+// New signs in with the browser chosen in setup, by default BMP's own
+// sign-in window.
+func New(ctx context.Context, browser string) (*Client, error) {
+	var cookies string
+	var err error
+	if browser = strings.TrimSpace(browser); browser == "" || browser == ProfileBrowser {
+		cookies, err = auth.CookiesFromProfile(ctx)
+	} else {
+		cookies, err = auth.CookiesFromBrowser(ctx, browser)
 		err = retryAfterUpdate(ctx, err, func() error {
-			exported, err = auth.CookiesFromBrowser(ctx, browser)
+			cookies, err = auth.CookiesFromBrowser(ctx, browser)
 			return err
 		})
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrAuthentication, err)
-		}
-		cookies = exported
-	} else if cookies == "" {
-		return nil, fmt.Errorf("%w: choose your browser in setup (Ctrl+P)", ErrNotConfigured)
 	}
-
-	authUser := 0
-	if value := strings.TrimSpace(os.Getenv("YTMUSIC_AUTH_USER")); value != "" {
-		parsed, err := strconv.Atoi(value)
-		if err != nil || parsed < 0 {
-			return nil, errors.New("YTMUSIC_AUTH_USER must be a non-negative integer")
-		}
-		authUser = parsed
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrAuthentication, err)
 	}
-
 	session, err := auth.NewSession(cookies)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrAuthentication, err)
@@ -95,7 +81,7 @@ func newClient(ctx context.Context, browser, cookies string) (*Client, error) {
 		return nil, fmt.Errorf("%w: %w", ErrAuthentication, err)
 	}
 	return &Client{
-		api:      innertube.New(session, strconv.Itoa(authUser), strings.TrimSpace(os.Getenv("YTMUSIC_PAGE_ID"))),
+		api:      innertube.New(session, "0", ""),
 		resolver: streamresolver.NewYTDLPResolver(session.Netscape()),
 	}, nil
 }

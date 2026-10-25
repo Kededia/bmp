@@ -7,8 +7,8 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/charmbracelet/x/ansi v0.11.6
+	github.com/coder/websocket v1.8.15
 	github.com/ebitengine/oto/v3 v3.5.1
-	github.com/joho/godotenv v1.5.1
 	github.com/mattn/go-sixel v0.0.14
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/image v0.47.0

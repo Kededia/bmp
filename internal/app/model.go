@@ -194,7 +194,7 @@ func New() Model {
 	setupFolderInput.CharLimit = 1024
 	applyTextInputTheme(&setupFolderInput, selectedTheme)
 
-	musicCache, musicCacheError := musiccache.NewFromEnvironment(persistedSettings.MusicDir)
+	musicCache, musicCacheError := musiccache.New(persistedSettings.MusicDir)
 	musicStore, musicStoreError := musicstore.New()
 	spectrumAnalyzer := spectrum.New()
 	appContext, appCancel := context.WithCancel(context.Background())
@@ -294,7 +294,7 @@ func readYouTubeMusicLibrary(parent context.Context, browser string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
-		client, err := youtubemusic.NewFromEnvironmentContext(ctx, browser)
+		client, err := youtubemusic.New(ctx, browser)
 		if err != nil {
 			return youtubeMusicLibraryMsg{err: err}
 		}
