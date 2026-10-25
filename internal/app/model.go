@@ -722,6 +722,11 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		case "ctrl+p":
 			m.paletteOpen = true
 			m.paletteSelected = 0
+			for index, candidate := range themeCommands {
+				if candidate.Name == m.colors.Name {
+					m.paletteSelected = index
+				}
+			}
 		case "ctrl+r":
 			if !m.youtubeMusicLoading {
 				m.youtubeMusicLoading = true
