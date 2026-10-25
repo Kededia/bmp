@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,6 +14,9 @@ import (
 )
 
 func main() {
+	if !app.DetectSixel() && relaunchInWindowsTerminal() {
+		return
+	}
 	prepareTools()
 	model := app.New()
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithOutput(syncedOutput{os.Stdout}))
@@ -26,6 +30,26 @@ func main() {
 		fmt.Fprintf(os.Stderr, "bmp: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// relaunchInWindowsTerminal reopens BMP in Windows Terminal when it started
+// in a terminal that cannot show the album cover, such as the console a
+// double-click opens on Windows 10. The flag it passes keeps a Windows
+// Terminal without Sixel from reopening it again.
+func relaunchInWindowsTerminal() bool {
+	if slices.Contains(os.Args[1:], "--no-relaunch") {
+		return false
+	}
+	terminal, err := exec.LookPath("wt")
+	if err != nil {
+		return false
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	command := exec.Command(terminal, "--title", "BMP", "-d", filepath.Dir(executable), executable, "--no-relaunch")
+	return command.Start() == nil
 }
 
 // syncedOutput wraps each frame Bubble Tea writes, one write per frame, in a

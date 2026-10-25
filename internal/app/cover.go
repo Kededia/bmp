@@ -32,9 +32,16 @@ const (
 	sixelCellHeight = 20
 )
 
-// sixelSupported is true in Windows Terminal. The Windows 10 console has no
-// Sixel support, so it shows no cover.
-var sixelSupported = os.Getenv("WT_SESSION") != ""
+// sixelSupported is set by DetectSixel. Windows Terminal draws Sixel images;
+// the Windows 10 console does not, so it shows no cover.
+var sixelSupported bool
+
+// DetectSixel asks the terminal whether it draws Sixel images, before Bubble
+// Tea takes over the console, and reports it.
+func DetectSixel() bool {
+	sixelSupported = terminalHasSixel()
+	return sixelSupported
+}
 
 type coverMsg struct {
 	url   string
