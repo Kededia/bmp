@@ -931,18 +931,25 @@ func (m Model) View() string {
 		return enforceThemeBackground(m.paletteView(), m.colors.Background)
 	}
 
-	// Hints go most useful first; the footer drops the last ones that do not fit.
+	// Hints come in groups of related keys, in this order: moving around,
+	// the view's own actions, playback, play modes, volume, then the app.
+	// The footer drops the last ones that do not fit.
 	playLabel := "play"
 	if m.youtubeMusicPlayback.State == playback.StatePlaying {
 		playLabel = "pause"
 	}
-	var playing []ui.Hint
+	var playing, modes, volume []ui.Hint
 	if m.youtubeMusicPlayer != nil {
-		playing = []ui.Hint{{Key: "space", Label: playLabel}, {Key: "←→", Label: "track"}, {Key: "⇧←→", Label: "seek"}, {Key: "+-", Label: "volume"}, {Key: "M", Label: "mute"}, {Key: "S", Label: "shuffle"}}
+		playing = []ui.Hint{{Key: "space", Label: playLabel}, {Key: "←→", Label: "track"}, {Key: "⇧←→", Label: "seek"}}
+		modes = []ui.Hint{{Key: "S", Label: "shuffle"}}
+		volume = []ui.Hint{{Key: "+-", Label: "volume"}, {Key: "M", Label: "mute"}}
 	}
 	general := []ui.Hint{{Key: "^P", Label: "menu"}, {Key: "^D", Label: "quit"}}
-	hints := []ui.Hint{{Key: "↑↓", Label: "select"}, {Key: "↵", Label: "open"}, {Key: "/", Label: "search"}, {Key: "N", Label: "new playlist"}}
-	hints = append(append(append(hints, playing...), ui.Hint{Key: "^R", Label: "refresh"}), general...)
+	hints := slices.Concat(
+		[]ui.Hint{{Key: "↑↓", Label: "select"}, {Key: "↵", Label: "open"}},
+		[]ui.Hint{{Key: "/", Label: "search"}, {Key: "N", Label: "new playlist"}, {Key: "^R", Label: "refresh"}},
+		playing, modes, volume, general,
+	)
 	if m.youtubeMusicNaming {
 		next := "create"
 		if len(m.youtubeMusicPickTracks) > 0 {
@@ -960,17 +967,18 @@ func (m Model) View() string {
 	} else if m.youtubeMusicDeletePending != youtubeMusicDeleteNone {
 		hints = []ui.Hint{{Key: "D", Label: "delete to confirm"}, {Key: "esc", Label: "cancel"}}
 	} else if m.youtubeMusicView == youtubeMusicPlaylistView {
-		hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: "play"}, {Key: "⌫", Label: "back"}}
+		actions := []ui.Hint{{Key: "/", Label: "search"}}
 		if m.editable() {
-			hints = append(hints, ui.Hint{Key: "/", Label: "add"}, ui.Hint{Key: "PgUp/Dn", Label: "move"}, ui.Hint{Key: "D", Label: "delete"})
-		} else {
-			hints = append(hints, ui.Hint{Key: "/", Label: "search"})
+			actions = []ui.Hint{{Key: "/", Label: "add"}, {Key: "PgUp/Dn", Label: "move"}, {Key: "D", Label: "delete"}}
 		}
+		actions = append(actions, ui.Hint{Key: "N", Label: "new from this"})
 		if m.browsingQueue() {
-			hints = append(hints, ui.Hint{Key: "L", Label: "loop"})
+			modes = append(modes, ui.Hint{Key: "L", Label: "loop"})
 		}
-		hints = append(hints, ui.Hint{Key: "N", Label: "new from this"})
-		hints = append(append(hints, playing...), general...)
+		hints = slices.Concat(
+			[]ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: "play"}, {Key: "⌫", Label: "back"}},
+			actions, playing, modes, volume, general,
+		)
 	}
 	folderSize := ""
 	if m.youtubeMusicCacheSize >= 0 {
