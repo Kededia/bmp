@@ -20,6 +20,7 @@ import (
 	"bmp/internal/spectrum"
 	"bmp/internal/theme"
 	"bmp/internal/ui"
+	"bmp/internal/update"
 	"bmp/internal/youtubemusic"
 )
 
@@ -52,6 +53,23 @@ type youtubeMusicControlMsg struct {
 	// volumeSet marks a volume change made by the person, which the playing
 	// song keeps.
 	volumeSet bool
+}
+
+type updateCheckMsg struct{}
+
+type updatedMsg struct {
+	tag string
+}
+
+// installUpdate installs a newer release in the background. Failures, such as
+// being offline, wait for the next launch.
+func installUpdate(parent context.Context) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
+		defer cancel()
+		tag, _ := update.Install(ctx)
+		return updatedMsg{tag: tag}
+	}
 }
 
 type youtubeMusicView int
@@ -163,6 +181,7 @@ type Model struct {
 	youtubeMusicStoreErr          error
 	youtubeMusicPlayCounts        map[string]uint64
 	spectrumAnalyzer              *spectrum.Analyzer
+	updateNotice                  string
 	coverURL                      string
 	coverImageURL                 string
 	coverImage                    image.Image
@@ -298,6 +317,8 @@ func (m Model) Init() tea.Cmd {
 	if m.persistedSettings.Music.Valid {
 		commands = append(commands, func() tea.Msg { return resumeMsg{} })
 	}
+	// Check for an update once startup's own work is under way.
+	commands = append(commands, tea.Tick(10*time.Second, func(time.Time) tea.Msg { return updateCheckMsg{} }))
 	return tea.Batch(commands...)
 }
 
@@ -654,6 +675,16 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 	case coverMsg:
 		m.handleCover(msg)
 
+	case updateCheckMsg:
+		return m, installUpdate(m.appContext)
+
+	case updatedMsg:
+		if msg.tag != "" {
+			m.updateNotice = "UPDATED TO " + msg.tag + " · RESTART BMP TO USE IT"
+		}
+		// BMP tends to stay open, so it checks again every hour.
+		return m, tea.Tick(time.Hour, func(time.Time) tea.Msg { return updateCheckMsg{} })
+
 	case playlistSyncMsg:
 		return m, m.handleSync(msg)
 
@@ -927,11 +958,11 @@ func (m Model) View() string {
 		}
 		hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: pick}, {Key: "esc", Label: "close"}}
 	} else if m.youtubeMusicDeletePending != youtubeMusicDeleteNone {
-		hints = []ui.Hint{{Key: "D", Label: "confirm delete"}, {Key: "esc", Label: "cancel"}}
+		hints = []ui.Hint{{Key: "D", Label: "delete to confirm"}, {Key: "esc", Label: "cancel"}}
 	} else if m.youtubeMusicView == youtubeMusicPlaylistView {
 		hints = []ui.Hint{{Key: "↑↓"}, {Key: "↵", Label: "play"}, {Key: "⌫", Label: "back"}}
 		if m.editable() {
-			hints = append(hints, ui.Hint{Key: "/", Label: "add"}, ui.Hint{Key: "PgUp/Dn", Label: "move"}, ui.Hint{Key: "D", Label: "remove"})
+			hints = append(hints, ui.Hint{Key: "/", Label: "add"}, ui.Hint{Key: "PgUp/Dn", Label: "move"}, ui.Hint{Key: "D", Label: "delete"})
 		} else {
 			hints = append(hints, ui.Hint{Key: "/", Label: "search"})
 		}
@@ -944,6 +975,9 @@ func (m Model) View() string {
 	folderSize := ""
 	if m.youtubeMusicCacheSize >= 0 {
 		folderSize = "MUSIC FOLDER " + formatBytes(m.youtubeMusicCacheSize)
+	}
+	if m.updateNotice != "" {
+		folderSize = m.updateNotice
 	}
 	panel := ui.Panel("MUSIC", m.musicMainView(m.width, m.height), m.width, m.height, true, m.colors, folderSize, hints...)
 

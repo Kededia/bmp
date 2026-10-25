@@ -11,9 +11,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"bmp/internal/app"
+	"bmp/internal/update"
 )
 
 func main() {
+	update.Cleanup()
 	if !app.DetectSixel() && relaunchInWindowsTerminal() {
 		return
 	}

@@ -18,7 +18,7 @@ jobs:
       - name: Build
         run: |
           mkdir -p dist/bmp
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o dist/bmp/bmp.exe ./cmd/bmp
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X bmp/internal/update.Version=$GITHUB_REF_NAME" -o dist/bmp/bmp.exe ./cmd/bmp
           cp install-deps.cmd dist/bmp/
           cd dist && zip -r bmp-windows-x64.zip bmp
       - name: Publish

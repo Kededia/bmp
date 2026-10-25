@@ -97,17 +97,25 @@ func panelTitleBorder(title string, width int, borderColor, titleColor, backgrou
 	return borderStyle.Render("╭─") + titleStyle.Render(label) + borderStyle.Render(strings.Repeat("─", fill)+"╮")
 }
 
-// Shortcuts renders key/action pairs with emphasized keys.
+// Shortcuts renders key/action pairs with emphasized keys. A letter key
+// found in its label is emphasized there, capitalized, so "D" and "delete"
+// read as one word: Delete.
 func Shortcuts(colors theme.Theme, hints ...Hint) string {
+	keyStyle := lipgloss.NewStyle().Foreground(colors.Magenta).Background(colors.Background).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(colors.Muted).Background(colors.Background)
 	parts := make([]string, 0, len(hints))
 	for _, hint := range hints {
-		key := lipgloss.NewStyle().Foreground(colors.Magenta).Background(colors.Background).Bold(true).Render(hint.Key)
 		if hint.Label == "" {
-			parts = append(parts, key)
+			parts = append(parts, keyStyle.Render(hint.Key))
 			continue
 		}
-		label := lipgloss.NewStyle().Foreground(colors.Muted).Background(colors.Background).Render(hint.Label)
-		parts = append(parts, key+" "+label)
+		if len(hint.Key) == 1 && unicode.IsLetter(rune(hint.Key[0])) {
+			if at := strings.Index(strings.ToLower(hint.Label), strings.ToLower(hint.Key)); at >= 0 {
+				parts = append(parts, labelStyle.Render(hint.Label[:at])+keyStyle.Render(strings.ToUpper(hint.Key))+labelStyle.Render(hint.Label[at+1:]))
+				continue
+			}
+		}
+		parts = append(parts, keyStyle.Render(hint.Key)+" "+labelStyle.Render(hint.Label))
 	}
 	return strings.Join(parts, "  ")
 }
