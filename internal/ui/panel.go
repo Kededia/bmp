@@ -50,8 +50,13 @@ func Panel(title, content string, width, height int, focused bool, colors theme.
 	}
 	if len(hints) > 0 {
 		// Hints that do not fit are dropped from the end rather than wrapped.
+		// The status keeps its place at the right, two cells apart.
+		room := width - 2
+		if status != "" {
+			room -= lipgloss.Width(status) + 2
+		}
 		footer := Shortcuts(colors, hints...)
-		for count := len(hints) - 1; count > 0 && lipgloss.Width(footer) > width-2; count-- {
+		for count := len(hints) - 1; count > 0 && lipgloss.Width(footer) > room; count-- {
 			footer = Shortcuts(colors, hints[:count]...)
 		}
 		if gap := width - 2 - lipgloss.Width(footer) - lipgloss.Width(status); status != "" && gap >= 2 {
