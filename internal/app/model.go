@@ -123,7 +123,10 @@ type Model struct {
 	youtubeMusicPlaylist         youtubemusic.Playlist
 	// youtubeMusicQueue is the playlist playback runs from. The playing, loop,
 	// pending and shuffle-history positions index it, not the open playlist.
-	youtubeMusicQueue          youtubemusic.Playlist
+	youtubeMusicQueue youtubemusic.Playlist
+	// youtubeMusicQueueStale is set by Ctrl+R so the queue's playlist is read
+	// again when it opens, instead of reopening as it plays.
+	youtubeMusicQueueStale     bool
 	youtubeMusicShuffleHistory []int
 	youtubeMusicShuffleBack    bool
 	// youtubeMusicEdits are the open playlist's edits made in BMP.
@@ -481,9 +484,14 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			msg.playlist = applyEdits(msg.playlist, m.youtubeMusicEdits)
 			m.youtubeMusicPlaylist = msg.playlist
 			m.youtubeMusicTrackSelected = 0
+			var playCommand tea.Cmd
 			// The queue of a resumed song holds only that song until its
 			// playlist arrives here and replaces it.
 			if m.browsingQueue() && !restoring {
+				if m.youtubeMusicQueueStale {
+					m.refreshQueue()
+					playCommand = m.prefetchNextTrack()
+				}
 				// Show the queue itself so its rows match the positions playback uses.
 				m.youtubeMusicPlaylist = m.youtubeMusicQueue
 				m.youtubeMusicPlaylist.Tracks = append([]youtubemusic.Track(nil), m.youtubeMusicQueue.Tracks...)
@@ -510,7 +518,6 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				}
 				m.youtubeMusicPlayCounts, m.youtubeMusicStoreErr = m.youtubeMusicStore.Counts(videoIDs)
 			}
-			var playCommand tea.Cmd
 			if restoring {
 				restored := m.persistedSettings.Music
 				index := restored.TrackIndex
@@ -769,6 +776,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			if !m.youtubeMusicLoading {
 				m.youtubeMusicLoading = true
 				m.youtubeMusicErr = nil
+				m.youtubeMusicQueueStale = true
 				return m, readYouTubeMusicLibrary(m.appContext, m.persistedSettings.Browser)
 			}
 		case "enter":
@@ -776,7 +784,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				selected := m.youtubeMusicPlaylists[m.youtubeMusicPlaylistSelected]
 				m.youtubeMusicLoading = true
 				m.youtubeMusicErr = nil
-				if selected.ID == m.youtubeMusicQueue.ID {
+				if selected.ID == m.youtubeMusicQueue.ID && !m.youtubeMusicQueueStale {
 					// The playing playlist opens as it plays, without a reload.
 					queue := m.youtubeMusicQueue
 					return m, func() tea.Msg { return youtubeMusicPlaylistMsg{playlist: queue} }

@@ -424,7 +424,24 @@ func (m *Model) queueBrowsedPlaylist() {
 	m.youtubeMusicShuffleHistory = nil
 	m.youtubeMusicFailed = nil
 	m.musicRestoreTrackIndex = -1
+	m.youtubeMusicQueueStale = false
 	m.syncSearchRow()
+}
+
+// refreshQueue replaces the queue with the freshly read copy of its playlist
+// now open, so songs added elsewhere join it. The playing and looped songs
+// keep their places.
+func (m *Model) refreshQueue() {
+	loop := ""
+	if index := m.youtubeMusicLoopTrackIndex; index >= 0 && index < len(m.youtubeMusicQueue.Tracks) {
+		loop = m.youtubeMusicQueue.Tracks[index].VideoID
+	}
+	m.queueBrowsedPlaylist()
+	for index, track := range m.youtubeMusicQueue.Tracks {
+		if loop != "" && track.VideoID == loop {
+			m.youtubeMusicLoopTrackIndex = index
+		}
+	}
 }
 
 // syncSearchRow lists search results being played at the top of the library,
