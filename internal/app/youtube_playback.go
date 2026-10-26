@@ -607,7 +607,7 @@ func setYouTubeMusicVolume(parent context.Context, player playback.Player, delta
 		ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 		defer cancel()
 		err := player.AdjustVolume(ctx, delta)
-		return youtubeMusicControlMsg{snapshot: player.Snapshot(), err: err, volumeSet: true}
+		return youtubeMusicControlMsg{snapshot: player.Snapshot(), err: err}
 	}
 }
 

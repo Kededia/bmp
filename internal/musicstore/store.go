@@ -18,7 +18,6 @@ import (
 var (
 	playCountsBucket = []byte("play-counts")
 	editsBucket      = []byte("playlist-edits")
-	volumesBucket    = []byte("track-volumes")
 )
 
 type Store struct {
@@ -133,37 +132,6 @@ func (store *Store) SaveEdits(playlistID string, edits Edits) error {
 	})
 	if err != nil {
 		return fmt.Errorf("save playlist edits: %w", err)
-	}
-	return nil
-}
-
-// Volume returns the volume last set while trackID played, if any.
-func (store *Store) Volume(trackID string) (int, bool, error) {
-	volume, found := 0, false
-	err := store.db.View(func(tx *bolt.Tx) error {
-		if bucket := tx.Bucket(volumesBucket); bucket != nil {
-			if value := bucket.Get([]byte(trackID)); len(value) == 1 {
-				volume, found = int(value[0]), true
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, false, fmt.Errorf("read track volume: %w", err)
-	}
-	return volume, found, nil
-}
-
-func (store *Store) SaveVolume(trackID string, volume int) error {
-	err := store.db.Update(func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists(volumesBucket)
-		if err != nil {
-			return err
-		}
-		return bucket.Put([]byte(trackID), []byte{byte(max(0, min(100, volume)))})
-	})
-	if err != nil {
-		return fmt.Errorf("save track volume: %w", err)
 	}
 	return nil
 }
