@@ -73,7 +73,8 @@ func parsePlaylist(payload any) Playlist {
 			}
 			playlist.Title = textAt(renderer, "title")
 			playlist.ID = strings.TrimPrefix(browseID(renderer), "VL")
-			playlist.TrackCount = countFromText(textAt(renderer, "subtitle") + " " + textAt(renderer, "secondSubtitle"))
+			// The subtitle holds the year; the second one starts with the song count.
+			playlist.TrackCount = countFromText(textAt(renderer, "secondSubtitle"))
 			return
 		}
 	})
@@ -186,6 +187,14 @@ func findScopedContinuation(payload any, rendererKeys ...string) string {
 			result = findAnyContinuation(renderer["continuations"])
 			if result != "" {
 				return
+			}
+			// Newer pages end the renderer's own contents with the token.
+			contents, _ := renderer["contents"].([]any)
+			if len(contents) > 0 {
+				result = findAnyContinuation(objectMap(contents[len(contents)-1], "continuationItemRenderer"))
+				if result != "" {
+					return
+				}
 			}
 		}
 		if action := objectMap(object, "appendContinuationItemsAction"); action != nil {
