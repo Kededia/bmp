@@ -62,21 +62,10 @@ type coverRender struct {
 	draw string
 }
 
-var thumbnailSize = regexp.MustCompile(`=w\d+-h\d+`)
-
-// coverURL asks for a YouTube Music thumbnail large enough for any window,
-// falling back to the video's own thumbnail for songs added without one.
-func coverURL(track youtubemusic.Track) string {
-	if track.Thumbnail != "" {
-		return thumbnailSize.ReplaceAllString(track.Thumbnail, "=w544-h544")
-	}
-	return "https://i.ytimg.com/vi/" + track.VideoID + "/hqdefault.jpg"
-}
-
 // fetchCover reads the cover from the covers folder of the music folder,
 // downloading and keeping it there the first time.
 func fetchCover(parent context.Context, track youtubemusic.Track, musicDirectory string) tea.Cmd {
-	url := coverURL(track)
+	url := youtubemusic.CoverURL(track)
 	albumPath := filepath.Join(musicDirectory, "covers", track.VideoID+".jpg")
 	path := albumPath
 	if track.Thumbnail == "" {
@@ -142,10 +131,10 @@ func (m *Model) coverCommand() tea.Cmd {
 		return nil
 	}
 	track := m.youtubeMusicQueue.Tracks[index]
-	if track.VideoID == "" || coverURL(track) == m.coverURL {
+	if track.VideoID == "" || youtubemusic.CoverURL(track) == m.coverURL {
 		return nil
 	}
-	m.coverURL = coverURL(track)
+	m.coverURL = youtubemusic.CoverURL(track)
 	return fetchCover(m.appContext, track, m.youtubeMusicCache.Directory())
 }
 

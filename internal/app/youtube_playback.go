@@ -13,6 +13,7 @@ import (
 
 	"bmp/internal/musiccache"
 	"bmp/internal/playback"
+	"bmp/internal/serverapi"
 	"bmp/internal/spectrum"
 	"bmp/internal/youtubemusic"
 )
@@ -66,12 +67,15 @@ func waitForYouTubeMusicCacheEvent(generation int, events <-chan youtubeMusicCac
 }
 
 // downloadYouTubeMusicTrack stores one track in the cache, reporting each
-// phase on events.
+// phase on events. A song the BMP server has, with serverExtension as its
+// file extension, comes from there rather than from YouTube.
 func downloadYouTubeMusicTrack(
 	ctx context.Context,
 	generation int,
 	client *youtubemusic.Client,
 	cache *musiccache.Cache,
+	server *serverapi.Client,
+	serverExtension string,
 	track youtubemusic.Track,
 	index int,
 	events chan<- youtubeMusicCacheEvent,
@@ -101,6 +105,22 @@ func downloadYouTubeMusicTrack(
 		_ = emit(base)
 		return
 	}
+	artist := trackArtistNames(track.Artists)
+	if server != nil && serverExtension != "" {
+		base.phase = musicCacheDownloading
+		if !emit(base) {
+			return
+		}
+		path, err = cache.Store(ctx, track.VideoID, track.Title, artist, serverExtension, server.SongURL(track.VideoID), server.Headers(), nil)
+		if err == nil {
+			base.phase, base.path = musicCacheReady, path
+			_ = emit(base)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+	}
 
 	base.phase = musicCacheResolving
 	if !emit(base) {
@@ -121,7 +141,6 @@ func downloadYouTubeMusicTrack(
 	}
 	lastReport := time.Time{}
 	lastPercent := -1
-	artist := trackArtistNames(track.Artists)
 	if artist == "" {
 		artist = resolved.Artist
 	}
@@ -522,6 +541,7 @@ func (m *Model) downloadTrack(index int) tea.Cmd {
 		return nil
 	}
 	m.cancelYouTubeQueue()
+	m.cancelBackground()
 	ctx, cancel := context.WithCancel(m.appContext)
 	m.youtubeMusicCacheCancel = cancel
 	m.youtubeMusicDownloadIndex = index
@@ -535,7 +555,7 @@ func (m *Model) downloadTrack(index int) tea.Cmd {
 	}
 	m.youtubeMusicCacheStatus = youtubeMusicCacheEvent{generation: generation, phase: musicCacheChecking, trackIndex: index, videoID: track.VideoID}
 	m.youtubeMusicCacheStatusNow = false
-	go downloadYouTubeMusicTrack(ctx, generation, m.youtubeMusicClient, m.youtubeMusicCache, track, index, events)
+	go downloadYouTubeMusicTrack(ctx, generation, m.youtubeMusicClient, m.youtubeMusicCache, m.server, m.serverSongs[track.VideoID], track, index, events)
 	return waitForYouTubeMusicCacheEvent(generation, events)
 }
 

@@ -20,7 +20,7 @@ type Hint struct {
 // embedded in the top border to preserve one additional row for content.
 // Interactive panes can supply compact keyboard hints pinned to the bottom,
 // with status right-aligned on the same row when it fits.
-func Panel(title, content string, width, height int, focused bool, colors theme.Theme, status string, hints ...Hint) string {
+func Panel(title, badge, content string, width, height int, focused bool, colors theme.Theme, status string, hints ...Hint) string {
 	if width < 4 || height < 3 {
 		return ""
 	}
@@ -77,12 +77,13 @@ func Panel(title, content string, width, height int, focused bool, colors theme.
 		Render(body)
 	lines := strings.Split(rendered, "\n")
 	if len(lines) > 0 {
-		lines[0] = panelTitleBorder(title, width, borderColor, titleColor, colors.Background)
+		lines[0] = panelTitleBorder(title, badge, width, borderColor, titleColor, colors.Background)
 	}
 	return strings.Join(lines, "\n")
 }
 
-func panelTitleBorder(title string, width int, borderColor, titleColor, background lipgloss.Color) string {
+// The badge, already styled, sits at the right end of the border.
+func panelTitleBorder(title, badge string, width int, borderColor, titleColor, background lipgloss.Color) string {
 	title = ansi.Strip(title)
 	title = strings.Map(func(character rune) rune {
 		if unicode.IsControl(character) {
@@ -99,7 +100,12 @@ func panelTitleBorder(title string, width int, borderColor, titleColor, backgrou
 	fill := max(0, width-3-lipgloss.Width(label))
 	borderStyle := lipgloss.NewStyle().Foreground(borderColor).Background(background)
 	titleStyle := lipgloss.NewStyle().Foreground(titleColor).Background(background).Bold(true)
-	return borderStyle.Render("╭─") + titleStyle.Render(label) + borderStyle.Render(strings.Repeat("─", fill)+"╮")
+	end := borderStyle.Render(strings.Repeat("─", fill) + "╮")
+	if badge != "" && fill >= lipgloss.Width(badge)+3 {
+		space := lipgloss.NewStyle().Background(background).Render(" ")
+		end = borderStyle.Render(strings.Repeat("─", fill-lipgloss.Width(badge)-3)) + space + badge + space + borderStyle.Render("─╮")
+	}
+	return borderStyle.Render("╭─") + titleStyle.Render(label) + end
 }
 
 // Shortcuts renders key/action pairs with emphasized keys. A letter key

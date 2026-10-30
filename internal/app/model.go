@@ -16,6 +16,7 @@ import (
 	"bmp/internal/musiccache"
 	"bmp/internal/musicstore"
 	"bmp/internal/playback"
+	"bmp/internal/serverapi"
 	"bmp/internal/settings"
 	"bmp/internal/spectrum"
 	"bmp/internal/theme"
@@ -36,7 +37,9 @@ type youtubeMusicLibraryMsg struct {
 
 type youtubeMusicPlaylistMsg struct {
 	playlist youtubemusic.Playlist
-	err      error
+	// serverEdits are the playlist's edits on the BMP server, if any.
+	serverEdits *musicstore.Edits
+	err         error
 }
 
 type youtubeMusicPlaybackMsg struct {
@@ -197,6 +200,25 @@ type Model struct {
 	musicRestoreTrackIndex        int
 	musicRestorePosition          time.Duration
 	musicRestorePaused            bool
+
+	// The BMP server the music is shared through, nil without one.
+	server            *serverapi.Client
+	serverSongs       map[string]string
+	serverLibrary     []youtubemusic.Playlist
+	serverSyncing     bool
+	serverUploading   bool
+	serverUploadAgain bool
+	serverErr         error
+	serverSetupOpen   bool
+	serverInputs      [3]textinput.Model
+	serverFocus       int
+	serverChecking    bool
+	serverSetupStatus string
+	serverSetupError  bool
+	// The background download filling the music folder for the server.
+	backgroundCancel     context.CancelFunc
+	backgroundGeneration int
+	backgroundSkip       map[string]bool
 }
 
 var themeCommands = []theme.Theme{
@@ -227,6 +249,11 @@ func New() Model {
 	nameInput.Prompt = "name> "
 	nameInput.CharLimit = 150
 	applyTextInputTheme(&nameInput, selectedTheme)
+
+	serverInputs := newServerInputs()
+	for index := range serverInputs {
+		applyTextInputTheme(&serverInputs[index], selectedTheme)
+	}
 
 	setupFolderInput := textinput.New()
 	setupFolderInput.Prompt = "folder> "
@@ -269,6 +296,8 @@ func New() Model {
 		settingsLastSaved:          time.Now(),
 		musicRestorePending:        persistedSettings.Music.Valid,
 		musicRestoreTrackIndex:     -1,
+		server:                     serverapi.New(persistedSettings.Server.URL, persistedSettings.Server.User, persistedSettings.Server.Password),
+		serverInputs:               serverInputs,
 	}
 	m.terminalTitle = m.windowTitle()
 	return m
@@ -277,6 +306,9 @@ func New() Model {
 // Close cancels background work owned by the application model.
 func (m Model) Close() {
 	m.saveSettingsNow()
+	if m.backgroundCancel != nil {
+		m.backgroundCancel()
+	}
 	if m.youtubeMusicCacheCancel != nil {
 		m.youtubeMusicCacheCancel()
 	}
@@ -299,6 +331,9 @@ func (m *Model) applyTheme(selected theme.Theme) {
 	applyTextInputTheme(&m.youtubeMusicSearchInput, selected)
 	applyTextInputTheme(&m.youtubeMusicNameInput, selected)
 	applyTextInputTheme(&m.setupFolder, selected)
+	for index := range m.serverInputs {
+		applyTextInputTheme(&m.serverInputs[index], selected)
+	}
 }
 
 func applyTextInputTheme(input *textinput.Model, colors theme.Theme) {
@@ -356,7 +391,7 @@ func readYouTubeMusicLibrary(parent context.Context, browser string) tea.Cmd {
 	}
 }
 
-func readYouTubeMusicPlaylist(parent context.Context, client *youtubemusic.Client, id string) tea.Cmd {
+func readYouTubeMusicPlaylist(parent context.Context, client *youtubemusic.Client, server *serverapi.Client, id string) tea.Cmd {
 	return func() tea.Msg {
 		if client == nil {
 			return youtubeMusicPlaylistMsg{err: errors.New("YouTube Music is not configured")}
@@ -364,7 +399,13 @@ func readYouTubeMusicPlaylist(parent context.Context, client *youtubemusic.Clien
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
 		playlist, err := client.GetPlaylist(ctx, id)
-		return youtubeMusicPlaylistMsg{playlist: playlist, err: err}
+		msg := youtubeMusicPlaylistMsg{playlist: playlist, err: err}
+		if err == nil && server != nil && !playlist.Owned {
+			if edits, err := server.Edits(ctx, id); err == nil {
+				msg.serverEdits = &edits
+			}
+		}
+		return msg
 	}
 }
 
@@ -459,9 +500,12 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				}
 				m.youtubeMusicPlaylistSelected = index
 				m.youtubeMusicLoading = true
-				return m, readYouTubeMusicPlaylist(m.appContext, m.youtubeMusicClient, restoredPlaylistID)
+				return m, tea.Batch(readYouTubeMusicPlaylist(m.appContext, m.youtubeMusicClient, m.server, restoredPlaylistID), m.startServerSync())
 			}
 			m.musicRestorePending = false
+		}
+		if msg.err == nil {
+			return m, m.startServerSync()
 		}
 
 	case youtubeMusicPlaylistMsg:
@@ -476,6 +520,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			// Owned playlists change on YouTube Music itself, so they keep no edits.
 			if m.youtubeMusicStore != nil && !searchPlaylist(msg.playlist) && !msg.playlist.Owned {
 				m.youtubeMusicEdits, m.youtubeMusicStoreErr = m.youtubeMusicStore.Edits(msg.playlist.ID)
+				m.youtubeMusicEdits = m.newestEdits(msg.playlist.ID, m.youtubeMusicEdits, msg.serverEdits)
 			}
 			m.rememberEntries(msg.playlist)
 			msg.playlist = applyEdits(msg.playlist, m.youtubeMusicEdits)
@@ -563,7 +608,8 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			if m.youtubeMusicCacheStatus.phase != musicCacheFailed {
 				m.youtubeMusicCacheStatus = youtubeMusicCacheEvent{}
 			}
-			return m, tea.Batch(readMusicCacheSize(m.youtubeMusicCache), m.prefetchTracks())
+			// Each pause in the queue's downloads lets the server's work go on.
+			return m, tea.Batch(readMusicCacheSize(m.youtubeMusicCache), m.prefetchTracks(), m.startUploads(), m.nextBackgroundDownload())
 		}
 		// The running download's position moves with its song when songs move.
 		msg.trackIndex = m.youtubeMusicDownloadIndex
@@ -669,7 +715,32 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		m.handleCover(msg)
 
 	case updateCheckMsg:
-		return m, installUpdate(m.appContext)
+		// The hourly check also syncs with the server, once the library
+		// loaded; loading it syncs too.
+		var sync tea.Cmd
+		if m.youtubeMusicClient != nil {
+			sync = m.startServerSync()
+		}
+		return m, tea.Batch(installUpdate(m.appContext), sync)
+
+	case serverSyncedMsg:
+		return m, m.handleServerSynced(msg)
+
+	case serverReachedMsg:
+		m.handleServerReached(msg)
+		return m, nil
+
+	case serverUploadedMsg:
+		return m, m.handleServerUploaded(msg)
+
+	case backgroundDownloadedMsg:
+		return m, m.handleBackgroundDownloaded(msg)
+
+	case backgroundTickMsg:
+		return m, m.nextBackgroundDownload()
+
+	case serverCheckMsg:
+		return m, m.handleServerCheck(msg)
 
 	case updatedMsg:
 		if msg.tag != "" {
@@ -710,6 +781,9 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		if m.setupOpen {
 			return m, m.handleSetupKey(msg)
 		}
+		if m.serverSetupOpen {
+			return m, m.handleServerSetupKey(msg)
+		}
 		if m.youtubeMusicSearchOpen {
 			return m, m.handleSearchKey(msg)
 		}
@@ -725,16 +799,19 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				m.paletteOpen = false
 			case "enter":
 				m.paletteOpen = false
-				if m.paletteSelected == len(themeCommands) {
+				switch m.paletteSelected {
+				case len(themeCommands):
 					m.openSetup()
-				} else {
+				case len(themeCommands) + 1:
+					return m, m.openServerSetup()
+				default:
 					m.applyTheme(themeCommands[m.paletteSelected])
 				}
 			case "up":
-				// The entry after the themes opens setup.
-				m.paletteSelected = (m.paletteSelected + len(themeCommands)) % (len(themeCommands) + 1)
+				// The two entries after the themes open setup and the server.
+				m.paletteSelected = (m.paletteSelected + len(themeCommands) + 1) % (len(themeCommands) + 2)
 			case "down":
-				m.paletteSelected = (m.paletteSelected + 1) % (len(themeCommands) + 1)
+				m.paletteSelected = (m.paletteSelected + 1) % (len(themeCommands) + 2)
 			}
 			return m, nil
 		}
@@ -775,7 +852,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 					queue := m.youtubeMusicQueue
 					return m, func() tea.Msg { return youtubeMusicPlaylistMsg{playlist: queue} }
 				}
-				return m, readYouTubeMusicPlaylist(m.appContext, m.youtubeMusicClient, selected.ID)
+				return m, readYouTubeMusicPlaylist(m.appContext, m.youtubeMusicClient, m.server, selected.ID)
 			}
 			if m.youtubeMusicView == youtubeMusicPlaylistView && !m.youtubeMusicResolving {
 				if !m.browsingQueue() {
@@ -921,6 +998,9 @@ func (m Model) View() string {
 	if m.setupOpen {
 		return enforceThemeBackground(m.setupView(), m.colors.Background)
 	}
+	if m.serverSetupOpen {
+		return enforceThemeBackground(m.serverSetupView(), m.colors.Background)
+	}
 	if m.paletteOpen {
 		return enforceThemeBackground(m.paletteView(), m.colors.Background)
 	}
@@ -978,10 +1058,22 @@ func (m Model) View() string {
 	if m.youtubeMusicCacheSize >= 0 {
 		folderSize = "MUSIC FOLDER " + formatBytes(m.youtubeMusicCacheSize)
 	}
+	// A dot shows the BMP server: green once reached, red when it is not.
+	serverDot := ""
+	if m.server != nil {
+		color := m.colors.Muted
+		switch {
+		case m.serverErr != nil:
+			color = m.colors.Red
+		case m.serverSongs != nil:
+			color = m.colors.Green
+		}
+		serverDot = lipgloss.NewStyle().Foreground(color).Background(m.colors.Background).Render("●")
+	}
 	if m.updateNotice != "" {
 		folderSize = m.updateNotice
 	}
-	panel := ui.Panel("MUSIC", m.musicMainView(m.width, m.height), m.width, m.height, true, m.colors, folderSize, hints...)
+	panel := ui.Panel("MUSIC", serverDot, m.musicMainView(m.width, m.height), m.width, m.height, true, m.colors, folderSize, hints...)
 
 	rendered := lipgloss.NewStyle().Background(m.colors.Background).Render(panel)
 	return m.withCover(enforceThemeBackground(rendered, m.colors.Background))
@@ -1010,8 +1102,13 @@ func (m Model) paletteView() string {
 	if m.paletteSelected == len(themeCommands) {
 		cursor = lipgloss.NewStyle().Foreground(m.colors.Magenta).Bold(true).Render("> ")
 	}
+	serverCursor := "  "
+	if m.paletteSelected == len(themeCommands)+1 {
+		serverCursor = lipgloss.NewStyle().Foreground(m.colors.Magenta).Bold(true).Render("> ")
+	}
 	lines = append(lines, "", lipgloss.NewStyle().Foreground(m.colors.Muted).Render("SETUP"),
-		cursor+lipgloss.NewStyle().Foreground(m.colors.Foreground).Bold(m.paletteSelected == len(themeCommands)).Render("browser and music folder"))
+		cursor+lipgloss.NewStyle().Foreground(m.colors.Foreground).Bold(m.paletteSelected == len(themeCommands)).Render("browser and music folder"),
+		serverCursor+lipgloss.NewStyle().Foreground(m.colors.Foreground).Bold(m.paletteSelected == len(themeCommands)+1).Render("BMP server (share with phones)"))
 	lines = append(lines, "", ui.Shortcuts(m.colors,
 		ui.Hint{Key: "↑↓", Label: "select"},
 		ui.Hint{Key: "↵", Label: "apply"},

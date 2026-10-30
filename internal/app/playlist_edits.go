@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -18,7 +19,12 @@ import (
 // before them there, or at the top when none does. Songs without a video ID
 // cannot be arranged, so an edited playlist leaves them out.
 func applyEdits(playlist youtubemusic.Playlist, edits musicstore.Edits) youtubemusic.Playlist {
-	if len(edits.Order) == 0 {
+	if playlist.ID == likedSongsID {
+		// Liked Songs keeps YouTube's order, newest likes first: songs moved
+		// in BMP go back on the next load.
+		edits.Order = nil
+	}
+	if len(edits.Order) == 0 && len(edits.Added) == 0 && len(edits.Removed) == 0 {
 		return playlist
 	}
 	fetched := make(map[string]youtubemusic.Track, len(playlist.Tracks))
@@ -59,6 +65,12 @@ func applyEdits(playlist youtubemusic.Playlist, edits musicstore.Edits) youtubem
 		}
 		previous = videoID
 	}
+	for _, track := range edits.Added {
+		if !placed[track.VideoID] {
+			tracks = append(tracks, track)
+			placed[track.VideoID] = true
+		}
+	}
 	playlist.Tracks = tracks
 	return playlist
 }
@@ -86,6 +98,8 @@ func (m *Model) saveEdits() {
 		}
 	}
 	m.youtubeMusicEdits.Order = order
+	m.youtubeMusicEdits.Updated = time.Now()
+	shareEdits(m.appContext, m.server, m.youtubeMusicPlaylist.ID, m.youtubeMusicEdits)
 	if m.youtubeMusicStore == nil {
 		m.youtubeMusicStoreErr = errors.New("music database is unavailable")
 		return

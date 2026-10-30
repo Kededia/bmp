@@ -255,9 +255,32 @@ func (cache *Cache) Store(
 	if response.ContentLength > maximumTrackSize {
 		return "", fmt.Errorf("download music: track is too large (%d bytes)", response.ContentLength)
 	}
+	reader := &progressReader{reader: response.Body, total: response.ContentLength, report: progress, stall: stall}
+	if path, err = cache.write(videoID, title, artist, container, reader, previous, found); err != nil {
+		return "", err
+	}
+	if progress != nil {
+		progress(Progress{Downloaded: reader.downloaded, Total: response.ContentLength})
+	}
+	return path, nil
+}
 
-	extension := safeExtension(container)
-	filename := trackFilename(videoID, title, artist, extension)
+// Put saves a song received whole, such as one uploaded to the server.
+func (cache *Cache) Put(videoID, title, artist, container string, body io.Reader) (string, error) {
+	previous, found, err := cache.Lookup(videoID)
+	if err != nil {
+		return "", err
+	}
+	if found && !Legacy(previous) {
+		return previous, nil
+	}
+	return cache.write(videoID, title, artist, container, body, previous, found)
+}
+
+// write saves body as videoID's file, through a partial file renamed once
+// complete, and replaces previous, the song's old file when found.
+func (cache *Cache) write(videoID, title, artist, container string, body io.Reader, previous string, found bool) (path string, returnErr error) {
+	filename := trackFilename(videoID, title, artist, safeExtension(container))
 	path = filepath.Join(cache.directory, filename)
 	partial := path + ".part"
 	file, err := os.OpenFile(partial, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
@@ -272,8 +295,7 @@ func (cache *Cache) Store(
 		}
 	}()
 
-	reader := &progressReader{reader: io.LimitReader(response.Body, maximumTrackSize+1), total: response.ContentLength, report: progress, stall: stall}
-	written, err := io.Copy(file, reader)
+	written, err := io.Copy(file, io.LimitReader(body, maximumTrackSize+1))
 	if err != nil {
 		return "", fmt.Errorf("download music: %w", err)
 	}
@@ -306,9 +328,6 @@ func (cache *Cache) Store(
 	if found && previous != path {
 		// This fails while the old file is playing; the next scan removes it.
 		_ = os.Remove(previous)
-	}
-	if progress != nil {
-		progress(Progress{Downloaded: written, Total: response.ContentLength})
 	}
 	return path, nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -34,6 +35,17 @@ type Track struct {
 	// SetVideoID identifies the song's entry in a playlist, which YouTube
 	// Music needs to remove or move it.
 	SetVideoID string `json:",omitempty"`
+}
+
+var thumbnailSize = regexp.MustCompile(`=w\d+-h\d+`)
+
+// CoverURL asks for a YouTube Music thumbnail large enough for any window,
+// falling back to the video's own thumbnail for songs added without one.
+func CoverURL(track Track) string {
+	if track.Thumbnail != "" {
+		return thumbnailSize.ReplaceAllString(track.Thumbnail, "=w544-h544")
+	}
+	return "https://i.ytimg.com/vi/" + track.VideoID + "/hqdefault.jpg"
 }
 
 type Playlist struct {

@@ -17,6 +17,14 @@ type State struct {
 	Browser  string     `json:"browser,omitempty"`
 	MusicDir string     `json:"music_dir,omitempty"`
 	Music    MusicState `json:"music,omitempty"`
+	Server   Server     `json:"server,omitzero"`
+}
+
+// Server is the BMP server the music is shared through, if any.
+type Server struct {
+	URL      string `json:"url,omitempty"`
+	User     string `json:"user,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 // MusicState identifies the exact playlist row, including intentional duplicates.

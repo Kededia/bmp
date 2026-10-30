@@ -6,3 +6,7 @@
 # Local notes for agents
 AGENTS.md
 HANDOFF.md
+
+# bmpd build and local test data
+/bmpd
+/data/

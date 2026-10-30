@@ -24,6 +24,18 @@ BMP updates itself from new releases. It needs Windows 10 or 11 with Chrome or E
 | `PgUp` `PgDn` (or `Alt+↑` `↓`), `D` | Move or delete a song in a playlist |
 | `Ctrl+R` / `Ctrl+P` / `Ctrl+D` | Reload the library / themes and setup / quit |
 
+## Share with phones (BMP server)
+
+`bmpd` keeps your songs, playlists and play counts on a server so phones can play them through a Subsonic app (Ultrasonic, Tempo or Symfonium on Android). BMP stays the one talking to YouTube: it uploads the songs it downloads and, while it runs, slowly downloads the rest of your playlists for the server (Liked Songs only as you play its songs).
+
+1. Build it for the server, from PowerShell: `$env:GOOS="linux"; go build -o bmpd ./cmd/bmpd; $env:GOOS=""`, and copy `bmpd` there.
+2. Add a user: `bmpd -data /var/lib/bmpd adduser fabien`. Note the password and API key it prints; they are shown once.
+3. Run it with a domain pointing at the server: `bmpd -data /var/lib/bmpd -domain music.example.com`. It gets its HTTPS certificate from Let's Encrypt (ports 80 and 443 must be open). As a systemd service: `ExecStart=/usr/local/bin/bmpd -data /var/lib/bmpd -domain music.example.com`.
+4. In BMP, `Ctrl+P` → BMP server: enter the address, user and password.
+5. In the phone app, add a server with the same address, user and password (or the API key where the app offers it).
+
+To try it at home first, run `bmpd` without `-domain`: it serves plain HTTP on port 4533. Use `http://localhost:4533` in BMP and `http://<PC address>:4533` in the phone app on the same Wi-Fi.
+
 ## Build from source
 
 With Go installed, `bmp.cmd` builds and runs BMP; `install-deps.cmd` fetches the tools.
