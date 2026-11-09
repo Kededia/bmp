@@ -313,9 +313,20 @@ func (client *Client) ResolveStream(ctx context.Context, videoID string) (stream
 	if client == nil || client.resolver == nil {
 		return streamresolver.Result{}, errors.New("YouTube Music stream resolver is not configured")
 	}
-	resolved, err := client.resolver.Resolve(ctx, videoID)
+	return resolveStream(ctx, client.resolver, videoID)
+}
+
+// ResolveStreamWithoutAccount resolves the stream signed out. YouTube can
+// refuse the account's link, as for an account whose Premium ended, while the
+// signed-out one downloads.
+func (client *Client) ResolveStreamWithoutAccount(ctx context.Context, videoID string) (streamresolver.Result, error) {
+	return resolveStream(ctx, streamresolver.NewYTDLPResolver("# Netscape HTTP Cookie File\n"), videoID)
+}
+
+func resolveStream(ctx context.Context, resolver *streamresolver.YTDLPResolver, videoID string) (streamresolver.Result, error) {
+	resolved, err := resolver.Resolve(ctx, videoID)
 	err = retryAfterUpdate(ctx, err, func() error {
-		resolved, err = client.resolver.Resolve(ctx, videoID)
+		resolved, err = resolver.Resolve(ctx, videoID)
 		return err
 	})
 	if err != nil {

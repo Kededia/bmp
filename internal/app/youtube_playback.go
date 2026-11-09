@@ -122,55 +122,68 @@ func downloadYouTubeMusicTrack(
 		}
 	}
 
-	base.phase = musicCacheResolving
-	if !emit(base) {
-		return
-	}
-	resolveCtx, cancelResolve := context.WithTimeout(ctx, 2*time.Minute)
-	resolved, err := client.ResolveStream(resolveCtx, track.VideoID)
-	cancelResolve()
-	if err != nil {
-		base.phase, base.err = musicCacheFailed, err
+	// YouTube can refuse the account's link, as once its Premium ended, while
+	// the signed-out link downloads, so a refused song is resolved again
+	// signed out.
+	for signedOut := false; ; signedOut = true {
+		resolve := client.ResolveStream
+		if signedOut {
+			resolve = client.ResolveStreamWithoutAccount
+		}
+		base.phase = musicCacheResolving
+		if !emit(base) {
+			return
+		}
+		resolveCtx, cancelResolve := context.WithTimeout(ctx, 2*time.Minute)
+		resolved, err := resolve(resolveCtx, track.VideoID)
+		cancelResolve()
+		if err != nil {
+			base.phase, base.err = musicCacheFailed, err
+			_ = emit(base)
+			return
+		}
+		base.phase = musicCacheDownloading
+		base.totalBytes = resolved.ContentLength
+		if !emit(base) {
+			return
+		}
+		lastReport := time.Time{}
+		lastPercent := -1
+		if artist == "" {
+			artist = resolved.Artist
+		}
+		path, err = cache.Store(ctx, track.VideoID, track.Title, artist, resolved.Container, resolved.URL, resolved.HTTPHeaders, func(progress musiccache.Progress) {
+			percent := -1
+			if progress.Total > 0 {
+				percent = int(progress.Downloaded * 100 / progress.Total)
+			}
+			if percent == lastPercent && time.Since(lastReport) < 150*time.Millisecond {
+				return
+			}
+			if time.Since(lastReport) < 150*time.Millisecond && progress.Downloaded != progress.Total {
+				return
+			}
+			lastReport, lastPercent = time.Now(), percent
+			progressEvent := base
+			progressEvent.downloaded = progress.Downloaded
+			progressEvent.totalBytes = progress.Total
+			_ = emit(progressEvent)
+		})
+		if errors.Is(err, musiccache.ErrForbidden) && !signedOut {
+			continue
+		}
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
+			base.phase, base.err = musicCacheFailed, err
+			_ = emit(base)
+			return
+		}
+		base.phase, base.path, base.downloaded, base.totalBytes = musicCacheReady, path, 0, 0
 		_ = emit(base)
 		return
 	}
-	base.phase = musicCacheDownloading
-	base.totalBytes = resolved.ContentLength
-	if !emit(base) {
-		return
-	}
-	lastReport := time.Time{}
-	lastPercent := -1
-	if artist == "" {
-		artist = resolved.Artist
-	}
-	path, err = cache.Store(ctx, track.VideoID, track.Title, artist, resolved.Container, resolved.URL, resolved.HTTPHeaders, func(progress musiccache.Progress) {
-		percent := -1
-		if progress.Total > 0 {
-			percent = int(progress.Downloaded * 100 / progress.Total)
-		}
-		if percent == lastPercent && time.Since(lastReport) < 150*time.Millisecond {
-			return
-		}
-		if time.Since(lastReport) < 150*time.Millisecond && progress.Downloaded != progress.Total {
-			return
-		}
-		lastReport, lastPercent = time.Now(), percent
-		progressEvent := base
-		progressEvent.downloaded = progress.Downloaded
-		progressEvent.totalBytes = progress.Total
-		_ = emit(progressEvent)
-	})
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return
-		}
-		base.phase, base.err = musicCacheFailed, err
-		_ = emit(base)
-		return
-	}
-	base.phase, base.path, base.downloaded, base.totalBytes = musicCacheReady, path, 0, 0
-	_ = emit(base)
 }
 
 func playCachedYouTubeMusicTrack(
