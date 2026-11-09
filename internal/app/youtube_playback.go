@@ -539,6 +539,15 @@ func (m *Model) syncSearchRow() {
 	}
 }
 
+// logTrack writes a line about a queue track to bmp.log.
+func (m Model) logTrack(index int, format string, arguments ...any) {
+	track := youtubemusic.Track{}
+	if index >= 0 && index < len(m.youtubeMusicQueue.Tracks) {
+		track = m.youtubeMusicQueue.Tracks[index]
+	}
+	log.Printf("%s %q: "+format, append([]any{track.VideoID, track.Title}, arguments...)...)
+}
+
 // browsingQueue reports whether the open playlist is the queue, so its rows
 // share the queue's playing, loop and download positions.
 func (m Model) browsingQueue() bool {
@@ -556,11 +565,13 @@ func (m *Model) refreshPlayback() tea.Cmd {
 	state := m.youtubeMusicPlayback.State
 	if state == playback.StateError && previousState != playback.StateError && !m.youtubeMusicResolving && m.youtubeMusicPlayingIndex >= 0 {
 		// A file that cannot play is skipped like a failed download.
+		m.logTrack(m.youtubeMusicPlayingIndex, "playback failed at %s: %v", m.youtubeMusicPlayback.Position.Round(time.Second), m.youtubeMusicPlayback.Err)
 		return m.skipFailedTrack(m.youtubeMusicPlayingIndex)
 	}
 	if previousState == playback.StateEnded || state != playback.StateEnded || m.youtubeMusicResolving {
 		return nil
 	}
+	m.logTrack(m.youtubeMusicPlayingIndex, "ended at %s of %s", m.youtubeMusicPlayback.Position.Round(time.Second), m.youtubeMusicPlayback.Duration.Round(time.Second))
 	next := m.upcomingTrackIndex()
 	if loop := m.youtubeMusicLoopTrackIndex; loop >= 0 && loop == m.youtubeMusicPlayingIndex {
 		next = loop

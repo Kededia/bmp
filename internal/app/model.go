@@ -681,6 +681,11 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		}
 		m.youtubeMusicResolving = false
 		m.youtubeMusicPlaybackErr = msg.err
+		if msg.err != nil {
+			log.Printf("%s: play failed: %v", msg.videoID, msg.err)
+		} else {
+			log.Printf("%s: playing", msg.videoID)
+		}
 		if msg.player != nil {
 			m.youtubeMusicPlayer = msg.player
 		}
