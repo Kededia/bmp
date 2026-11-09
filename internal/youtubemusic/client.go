@@ -316,11 +316,10 @@ func (client *Client) ResolveStream(ctx context.Context, videoID string) (stream
 	return resolveStream(ctx, client.resolver, videoID)
 }
 
-// ResolveStreamWithoutAccount resolves the stream signed out. YouTube can
-// refuse the account's link, as for an account whose Premium ended, while the
-// signed-out one downloads.
+// ResolveStreamWithoutAccount resolves the stream signed out, which needs no
+// PO token.
 func (client *Client) ResolveStreamWithoutAccount(ctx context.Context, videoID string) (streamresolver.Result, error) {
-	return resolveStream(ctx, streamresolver.NewYTDLPResolver("# Netscape HTTP Cookie File\n"), videoID)
+	return resolveStream(ctx, streamresolver.NewYTDLPResolver(""), videoID)
 }
 
 func resolveStream(ctx context.Context, resolver *streamresolver.YTDLPResolver, videoID string) (streamresolver.Result, error) {

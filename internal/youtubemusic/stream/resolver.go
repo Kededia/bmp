@@ -31,6 +31,8 @@ type YTDLPResolver struct {
 	cookies string
 }
 
+// NewYTDLPResolver resolves with the account of netscapeCookies, or signed out
+// when they are empty.
 func NewYTDLPResolver(netscapeCookies string) *YTDLPResolver {
 	return &YTDLPResolver{cookies: netscapeCookies}
 }
@@ -51,8 +53,12 @@ func (resolver *YTDLPResolver) Resolve(ctx context.Context, videoID string) (res
 			returnErr = fmt.Errorf("remove temporary yt-dlp cookie file: %w", err)
 		}
 	}()
+	cookies := resolver.cookies
+	if cookies == "" {
+		cookies = "# Netscape HTTP Cookie File\n"
+	}
 	if err := cookieFile.Chmod(0o600); err == nil {
-		_, err = cookieFile.WriteString(resolver.cookies)
+		_, err = cookieFile.WriteString(cookies)
 	} else {
 		_ = cookieFile.Close()
 		return Result{}, fmt.Errorf("secure temporary yt-dlp cookie file: %w", err)
@@ -79,7 +85,9 @@ func (resolver *YTDLPResolver) Resolve(ctx context.Context, videoID string) (res
 		"--format", "bestaudio[protocol=https][format_id!*=drc]/bestaudio[protocol=https]/best[protocol=https]",
 		"--cookies", cookiePath,
 	}
-	arguments = append(arguments, tokenArguments()...)
+	if resolver.cookies != "" {
+		arguments = append(arguments, tokenArguments()...)
+	}
 	command := exec.CommandContext(ctx, "yt-dlp", append(arguments, "https://music.youtube.com/watch?v="+videoID)...)
 	update.RLock()
 	output, err := command.Output()

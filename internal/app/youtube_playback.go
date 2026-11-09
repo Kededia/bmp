@@ -122,13 +122,13 @@ func downloadYouTubeMusicTrack(
 		}
 	}
 
-	// YouTube can refuse the account's link, as once its Premium ended, while
-	// the signed-out link downloads, so a refused song is resolved again
-	// signed out.
-	for signedOut := false; ; signedOut = true {
-		resolve := client.ResolveStream
-		if signedOut {
-			resolve = client.ResolveStreamWithoutAccount
+	// Songs download signed out first: without Premium the account gets the
+	// same audio, and YouTube slows its links down or refuses them. The
+	// account is the fallback, for songs only it can play.
+	for signedIn := false; ; signedIn = true {
+		resolve := client.ResolveStreamWithoutAccount
+		if signedIn {
+			resolve = client.ResolveStream
 		}
 		base.phase = musicCacheResolving
 		if !emit(base) {
@@ -137,6 +137,9 @@ func downloadYouTubeMusicTrack(
 		resolveCtx, cancelResolve := context.WithTimeout(ctx, 2*time.Minute)
 		resolved, err := resolve(resolveCtx, track.VideoID)
 		cancelResolve()
+		if err != nil && !signedIn && ctx.Err() == nil {
+			continue
+		}
 		if err != nil {
 			base.phase, base.err = musicCacheFailed, err
 			_ = emit(base)
@@ -169,7 +172,7 @@ func downloadYouTubeMusicTrack(
 			progressEvent.totalBytes = progress.Total
 			_ = emit(progressEvent)
 		})
-		if errors.Is(err, musiccache.ErrForbidden) && !signedOut {
+		if err != nil && !signedIn && ctx.Err() == nil {
 			continue
 		}
 		if err != nil {

@@ -24,9 +24,6 @@ const stallTimeout = 30 * time.Second
 
 var errStalled = errors.New("download stalled")
 
-// ErrForbidden is YouTube refusing a download link.
-var ErrForbidden = errors.New("HTTP 403 Forbidden")
-
 const maximumTrackSize = int64(256 << 20)
 
 // Progress reports an in-progress track download.
@@ -252,9 +249,6 @@ func (cache *Cache) Store(
 		return "", fmt.Errorf("download music: %w", err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode == http.StatusForbidden {
-		return "", fmt.Errorf("download music: %w", ErrForbidden)
-	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return "", fmt.Errorf("download music: HTTP %s", response.Status)
 	}
