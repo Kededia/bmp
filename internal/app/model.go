@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"log"
 	"slices"
 	"strings"
 	"time"
@@ -71,6 +72,11 @@ func installUpdate(parent context.Context, manual bool) tea.Cmd {
 		ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 		defer cancel()
 		tag, err := update.Install(ctx)
+		if err != nil {
+			log.Printf("update check failed: %v", err)
+		} else if tag != "" {
+			log.Printf("installed %s", tag)
+		}
 		return updatedMsg{tag: tag, err: err, manual: manual}
 	}
 }

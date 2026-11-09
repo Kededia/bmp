@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand/v2"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -106,6 +108,11 @@ func downloadYouTubeMusicTrack(
 		return
 	}
 	artist := trackArtistNames(track.Artists)
+	// Each download leaves a line in bmp.log, to tell YouTube's changes from
+	// BMP's when downloads fail or slow down.
+	logf := func(format string, arguments ...any) {
+		log.Printf("%s %q: "+format, append([]any{track.VideoID, track.Title}, arguments...)...)
+	}
 	if server != nil && serverExtension != "" {
 		base.phase = musicCacheDownloading
 		if !emit(base) {
@@ -120,16 +127,18 @@ func downloadYouTubeMusicTrack(
 		if ctx.Err() != nil {
 			return
 		}
+		logf("server download failed: %v", err)
 	}
 
 	// Songs download signed out first: without Premium the account gets the
 	// same audio, and YouTube slows its links down or refuses them. The
 	// account is the fallback, for songs only it can play.
 	for signedIn := false; ; signedIn = true {
-		resolve := client.ResolveStreamWithoutAccount
+		resolve, account := client.ResolveStreamWithoutAccount, "signed out"
 		if signedIn {
-			resolve = client.ResolveStream
+			resolve, account = client.ResolveStream, "signed in"
 		}
+		started := time.Now()
 		base.phase = musicCacheResolving
 		if !emit(base) {
 			return
@@ -137,9 +146,13 @@ func downloadYouTubeMusicTrack(
 		resolveCtx, cancelResolve := context.WithTimeout(ctx, 2*time.Minute)
 		resolved, err := resolve(resolveCtx, track.VideoID)
 		cancelResolve()
+		if err != nil && ctx.Err() == nil {
+			logf("%s, resolve failed after %s: %v", account, time.Since(started).Round(time.Millisecond), err)
+		}
 		if err != nil && !signedIn && ctx.Err() == nil {
 			continue
 		}
+		resolving := time.Since(started)
 		if err != nil {
 			base.phase, base.err = musicCacheFailed, err
 			_ = emit(base)
@@ -152,6 +165,7 @@ func downloadYouTubeMusicTrack(
 		case <-ctx.Done():
 			return
 		}
+		started = time.Now()
 		base.phase = musicCacheDownloading
 		base.totalBytes = resolved.ContentLength
 		if !emit(base) {
@@ -183,8 +197,18 @@ func downloadYouTubeMusicTrack(
 			progressEvent.totalBytes = progress.Total
 			_ = emit(progressEvent)
 		})
+		if err != nil && ctx.Err() == nil {
+			logf("%s, resolved in %s, download failed after %s: %v", account, resolving.Round(time.Millisecond), time.Since(started).Round(time.Millisecond), err)
+		}
 		if err != nil && !signedIn && ctx.Err() == nil {
 			continue
+		}
+		if err == nil {
+			size := int64(0)
+			if info, statErr := os.Stat(path); statErr == nil {
+				size = info.Size()
+			}
+			logf("%s, resolved in %s, downloaded %.1f MB in %s", account, resolving.Round(time.Millisecond), float64(size)/1e6, time.Since(started).Round(time.Millisecond))
 		}
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,11 +15,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"bmp/internal/app"
+	"bmp/internal/settings"
 	"bmp/internal/update"
 )
 
 func main() {
 	update.Cleanup()
+	openLog()
 	if !app.DetectSixel() && relaunchInWindowsTerminal() {
 		return
 	}
@@ -60,6 +64,25 @@ func restart() {
 		}
 		fmt.Fprintf(os.Stderr, "bmp: restart: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// openLog sends the log to bmp.log beside the settings, keeping the previous
+// one as bmp.log.old once it passes 1 MB. Without it the log is dropped, as
+// writing it to the terminal would break the screen.
+func openLog() {
+	log.SetOutput(io.Discard)
+	path, err := settings.Path()
+	if err != nil {
+		return
+	}
+	path = filepath.Join(filepath.Dir(path), "bmp.log")
+	if info, err := os.Stat(path); err == nil && info.Size() > 1<<20 {
+		_ = os.Rename(path, path+".old")
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	if file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+		log.SetOutput(file)
 	}
 }
 
