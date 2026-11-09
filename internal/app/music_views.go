@@ -435,6 +435,9 @@ func (m Model) selectionWindow(scrollID string, total, selected, visible int) (i
 	if m.listScroll != nil {
 		m.listScroll[scrollID] = start
 	}
+	if m.listRows != nil {
+		m.listRows[scrollID] = visible
+	}
 	return start, end
 }
 

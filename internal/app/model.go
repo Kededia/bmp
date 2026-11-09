@@ -119,6 +119,7 @@ type Model struct {
 	now                          time.Time
 	colors                       theme.Theme
 	listScroll                   map[string]int
+	listRows                     map[string]int
 	youtubeMusicClient           *youtubemusic.Client
 	youtubeMusicAccount          youtubemusic.Account
 	youtubeMusicPlaylists        []youtubemusic.Playlist
@@ -298,6 +299,7 @@ func New() Model {
 		spectrumAnalyzer:           spectrumAnalyzer,
 		coverRender:                &coverRender{},
 		listScroll:                 make(map[string]int),
+		listRows:                   make(map[string]int),
 		youtubeMusicSearchInput:    searchInput,
 		youtubeMusicNameInput:      nameInput,
 		youtubeMusicEntryIDs:       make(map[string]string),
@@ -903,20 +905,25 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				}
 				return m, m.requestYouTubeTrack(m.youtubeMusicTrackSelected)
 			}
-		case "home", "end":
+		case "home", "end", "shift+home", "shift+end":
 			if !m.youtubeMusicLoading {
-				first := msg.String() == "home"
-				if m.youtubeMusicView == youtubeMusicLibraryView {
-					m.youtubeMusicPlaylistSelected = 0
-					if !first {
-						m.youtubeMusicPlaylistSelected = max(0, len(m.youtubeMusicPlaylists)-1)
-					}
-				} else {
-					m.youtubeMusicTrackSelected = 0
-					if !first {
-						m.youtubeMusicTrackSelected = max(0, len(m.youtubeMusicPlaylist.Tracks)-1)
-					}
+				selected, total, scroll := &m.youtubeMusicPlaylistSelected, len(m.youtubeMusicPlaylists), playlistScroll
+				if m.youtubeMusicView == youtubeMusicPlaylistView {
+					selected, total, scroll = &m.youtubeMusicTrackSelected, len(m.youtubeMusicPlaylist.Tracks), trackScroll
 				}
+				// Shift moves a page, keeping one row of the last one in view.
+				page := max(1, m.listRows[scroll]-1)
+				switch msg.String() {
+				case "home":
+					*selected = 0
+				case "end":
+					*selected = total - 1
+				case "shift+home":
+					*selected -= page
+				case "shift+end":
+					*selected += page
+				}
+				*selected = min(max(0, *selected), max(0, total-1))
 			}
 		case "up":
 			if !m.youtubeMusicLoading {
