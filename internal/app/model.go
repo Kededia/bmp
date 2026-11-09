@@ -683,8 +683,6 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		m.youtubeMusicPlaybackErr = msg.err
 		if msg.err != nil {
 			log.Printf("%s: play failed: %v", msg.videoID, msg.err)
-		} else {
-			log.Printf("%s: playing", msg.videoID)
 		}
 		if msg.player != nil {
 			m.youtubeMusicPlayer = msg.player
@@ -711,6 +709,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				m.youtubeMusicTrackSelected = msg.trackIndex
 			}
 			m.youtubeMusicPlayback = m.youtubeMusicPlayer.Snapshot()
+			m.logTrack(msg.trackIndex, "playing from %s", m.youtubeMusicPlayback.Position.Round(time.Second))
 			commands := []tea.Cmd{applyYouTubeMusicPreferences(
 				m.appContext, m.youtubeMusicPlayer, m.persistedSettings.Volume, m.persistedSettings.Muted,
 			)}

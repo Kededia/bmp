@@ -48,13 +48,10 @@ func main() {
 // Windows cannot replace the running program. This one, set aside as
 // bmp.exe.old, gives its memory back meanwhile.
 func restart() {
-	executable, err := os.Executable()
-	if err != nil {
+	if update.Executable == "" {
 		return
 	}
-	// os.Executable can report the running program under its new name.
-	executable = strings.TrimSuffix(executable, ".old")
-	command := exec.Command(executable, "--no-relaunch")
+	command := exec.Command(update.Executable, "--no-relaunch")
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
 	debug.FreeOSMemory()
 	if err := command.Run(); err != nil {

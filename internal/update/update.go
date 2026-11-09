@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Version is the release tag the release workflow builds in. Builds from
@@ -26,11 +27,20 @@ const (
 	releaseAsset  = "bmp-windows-x64.zip"
 )
 
-// Cleanup removes the copy of bmp.exe the previous update set aside, which
-// Windows kept while it ran.
+// Executable is bmp.exe's path, read at startup: once an update sets the
+// running program aside, os.Executable can report its new name.
+var Executable, _ = os.Executable()
+
+// Cleanup removes the copies of bmp.exe updates set aside, which Windows kept
+// while they ran. One still running, as the BMP that restarted into this one,
+// stays until a later start.
 func Cleanup() {
-	if executable, err := os.Executable(); err == nil {
-		_ = os.Remove(executable + ".old")
+	if Executable == "" {
+		return
+	}
+	old, _ := filepath.Glob(Executable + "*.old")
+	for _, path := range old {
+		_ = os.Remove(path)
 	}
 }
 
@@ -95,20 +105,25 @@ func Install(ctx context.Context) (string, error) {
 	if len(files["bmp.exe"]) == 0 {
 		return "", fmt.Errorf("%s has no bmp.exe", releaseAsset)
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		return "", err
+	executable := Executable
+	if executable == "" {
+		return "", errors.New("locate bmp.exe")
 	}
 	if err := os.WriteFile(executable+".new", files["bmp.exe"], 0o755); err != nil {
 		return "", fmt.Errorf("save the update: %w", err)
 	}
-	_ = os.Remove(executable + ".old")
-	if err := os.Rename(executable, executable+".old"); err != nil {
+	// The previous copy set aside may still run, as the BMP that restarted
+	// into this one, so this copy then takes another name.
+	old := executable + ".old"
+	if err := os.Remove(old); err != nil && !errors.Is(err, os.ErrNotExist) {
+		old = fmt.Sprintf("%s.%d.old", executable, time.Now().Unix())
+	}
+	if err := os.Rename(executable, old); err != nil {
 		_ = os.Remove(executable + ".new")
 		return "", fmt.Errorf("set aside bmp.exe: %w", err)
 	}
 	if err := os.Rename(executable+".new", executable); err != nil {
-		_ = os.Rename(executable+".old", executable)
+		_ = os.Rename(old, executable)
 		return "", fmt.Errorf("install the update: %w", err)
 	}
 	if script := files["install-deps.cmd"]; len(script) > 0 {
