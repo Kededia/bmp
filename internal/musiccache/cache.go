@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -237,30 +239,20 @@ func (cache *Cache) Store(
 			returnErr = fmt.Errorf("download music: no data for %s", stallTimeout)
 		}
 	}()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	body, total, err := openStream(ctx, rawURL, headers)
 	if err != nil {
-		return "", fmt.Errorf("prepare music download: %w", err)
+		return "", err
 	}
-	for name, value := range headers {
-		request.Header.Set(name, value)
+	defer body.Close()
+	if total > maximumTrackSize {
+		return "", fmt.Errorf("download music: track is too large (%d bytes)", total)
 	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return "", fmt.Errorf("download music: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("download music: HTTP %s", response.Status)
-	}
-	if response.ContentLength > maximumTrackSize {
-		return "", fmt.Errorf("download music: track is too large (%d bytes)", response.ContentLength)
-	}
-	reader := &progressReader{reader: response.Body, total: response.ContentLength, report: progress, stall: stall}
+	reader := &progressReader{reader: body, total: total, report: progress, stall: stall}
 	if path, err = cache.write(videoID, title, artist, container, reader, previous, found); err != nil {
 		return "", err
 	}
 	if progress != nil {
-		progress(Progress{Downloaded: reader.downloaded, Total: response.ContentLength})
+		progress(Progress{Downloaded: reader.downloaded, Total: total})
 	}
 	return path, nil
 }
@@ -330,6 +322,84 @@ func (cache *Cache) write(videoID, title, artist, container string, body io.Read
 		_ = os.Remove(previous)
 	}
 	return path, nil
+}
+
+// youtubeRange is the largest range YouTube serves at full speed: it slows a
+// request for more, or for the whole file, down to playback speed. yt-dlp
+// reads its links in ranges of this size too.
+const youtubeRange = 10 << 20
+
+// openStream starts reading rawURL and returns its size. A YouTube link that
+// gives its size as clen is read in ranges of youtubeRange.
+func openStream(ctx context.Context, rawURL string, headers map[string]string) (io.ReadCloser, int64, error) {
+	if parsed, err := url.Parse(rawURL); err == nil && strings.HasSuffix(parsed.Hostname(), ".googlevideo.com") {
+		if size, err := strconv.ParseInt(parsed.Query().Get("clen"), 10, 64); err == nil && size > 0 {
+			reader := &rangeReader{ctx: ctx, url: rawURL, headers: headers, total: size}
+			if err := reader.open(); err != nil {
+				return nil, 0, err
+			}
+			return reader, size, nil
+		}
+	}
+	return get(ctx, rawURL, headers)
+}
+
+func get(ctx context.Context, rawURL string, headers map[string]string) (io.ReadCloser, int64, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("prepare music download: %w", err)
+	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil, 0, fmt.Errorf("download music: %w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		response.Body.Close()
+		return nil, 0, fmt.Errorf("download music: HTTP %s", response.Status)
+	}
+	return response.Body, response.ContentLength, nil
+}
+
+// rangeReader reads a YouTube link one range after the other.
+type rangeReader struct {
+	ctx     context.Context
+	url     string
+	headers map[string]string
+	offset  int64
+	total   int64
+	body    io.ReadCloser
+}
+
+func (reader *rangeReader) open() error {
+	end := min(reader.offset+youtubeRange, reader.total) - 1
+	body, _, err := get(reader.ctx, fmt.Sprintf("%s&range=%d-%d", reader.url, reader.offset, end), reader.headers)
+	reader.body = body
+	return err
+}
+
+func (reader *rangeReader) Read(buffer []byte) (int, error) {
+	if reader.body == nil {
+		if err := reader.open(); err != nil {
+			return 0, err
+		}
+	}
+	read, err := reader.body.Read(buffer)
+	reader.offset += int64(read)
+	if err == io.EOF && reader.offset < reader.total {
+		_ = reader.body.Close()
+		reader.body, err = nil, nil
+	}
+	return read, err
+}
+
+func (reader *rangeReader) Close() error {
+	if reader.body == nil {
+		return nil
+	}
+	return reader.body.Close()
 }
 
 type progressReader struct {
