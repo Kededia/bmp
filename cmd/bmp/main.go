@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 
@@ -23,13 +25,40 @@ func main() {
 	model := app.New()
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithOutput(syncedOutput{os.Stdout}))
 	finalModel, err := program.Run()
-	if final, ok := finalModel.(app.Model); ok {
+	final, ok := finalModel.(app.Model)
+	if ok {
 		final.Close()
 	} else {
 		model.Close()
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "bmp: %v\n", err)
+		os.Exit(1)
+	}
+	if ok && final.Restart() {
+		restart()
+	}
+}
+
+// restart runs the installed release in this terminal and waits for it, as
+// Windows cannot replace the running program. This one, set aside as
+// bmp.exe.old, gives its memory back meanwhile.
+func restart() {
+	executable, err := os.Executable()
+	if err != nil {
+		return
+	}
+	// os.Executable can report the running program under its new name.
+	executable = strings.TrimSuffix(executable, ".old")
+	command := exec.Command(executable, "--no-relaunch")
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	debug.FreeOSMemory()
+	if err := command.Run(); err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			os.Exit(exitError.ExitCode())
+		}
+		fmt.Fprintf(os.Stderr, "bmp: restart: %v\n", err)
 		os.Exit(1)
 	}
 }

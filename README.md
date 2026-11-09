@@ -14,7 +14,7 @@ BMP updates itself from new releases. It needs Windows 10 or 11 with Chrome or E
 
 | Key | Action |
 | --- | --- |
-| `↑` `↓` `Enter` `Backspace` | Browse, open or play, go back |
+| `↑` `↓` `Home` `End` `Enter` `Backspace` | Browse, jump to the top or bottom, open or play, go back |
 | `Space` | Play or pause |
 | `←` `→` / `Shift+←` `→` | Previous or next song / seek |
 | `+` `-` (`Alt` for bigger steps), `M` | Volume, mute |

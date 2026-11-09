@@ -58,17 +58,20 @@ type youtubeMusicControlMsg struct {
 type updateCheckMsg struct{}
 
 type updatedMsg struct {
-	tag string
+	tag    string
+	err    error
+	manual bool
 }
 
 // installUpdate installs a newer release in the background. Failures, such as
-// being offline, wait for the next launch.
-func installUpdate(parent context.Context) tea.Cmd {
+// being offline, wait for the next check. manual is a check asked for from the
+// command palette.
+func installUpdate(parent context.Context, manual bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 		defer cancel()
-		tag, _ := update.Install(ctx)
-		return updatedMsg{tag: tag}
+		tag, err := update.Install(ctx)
+		return updatedMsg{tag: tag, err: err, manual: manual}
 	}
 }
 
@@ -184,7 +187,6 @@ type Model struct {
 	youtubeMusicStoreErr          error
 	youtubeMusicPlayCounts        map[string]uint64
 	spectrumAnalyzer              *spectrum.Analyzer
-	updateNotice                  string
 	coverURL                      string
 	coverImageURL                 string
 	coverImage                    image.Image
@@ -200,6 +202,14 @@ type Model struct {
 	musicRestoreTrackIndex        int
 	musicRestorePosition          time.Duration
 	musicRestorePaused            bool
+
+	// updateTag is the release installed for the next run, updateStatus the
+	// result of a check from the command palette, and restart asks main to
+	// start the installed release once BMP closes.
+	updateTag      string
+	updateStatus   string
+	updateChecking bool
+	restart        bool
 
 	// The BMP server the music is shared through, nil without one.
 	server            *serverapi.Client
@@ -301,6 +311,11 @@ func New() Model {
 	}
 	m.terminalTitle = m.windowTitle()
 	return m
+}
+
+// Restart reports whether BMP closed to start the release it installed.
+func (m Model) Restart() bool {
+	return m.restart
 }
 
 // Close cancels background work owned by the application model.
@@ -721,7 +736,11 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		if m.youtubeMusicClient != nil {
 			sync = m.startServerSync()
 		}
-		return m, tea.Batch(installUpdate(m.appContext), sync)
+		if m.updateChecking {
+			return m, tea.Batch(sync, tea.Tick(time.Hour, func(time.Time) tea.Msg { return updateCheckMsg{} }))
+		}
+		m.updateChecking = true
+		return m, tea.Batch(installUpdate(m.appContext, false), sync)
 
 	case serverSyncedMsg:
 		return m, m.handleServerSynced(msg)
@@ -743,8 +762,20 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 		return m, m.handleServerCheck(msg)
 
 	case updatedMsg:
+		m.updateChecking = false
 		if msg.tag != "" {
-			m.updateNotice = "UPDATED TO " + msg.tag + " · RESTART BMP TO USE IT"
+			m.updateTag = msg.tag
+		}
+		// A check asked for from the command palette shows its result there,
+		// even when it waited on the hourly one.
+		if m.updateStatus != "" {
+			m.updateStatus = "up to date"
+			if msg.err != nil {
+				m.updateStatus = "failed: " + msg.err.Error()
+			}
+		}
+		if msg.manual {
+			return m, nil
 		}
 		// BMP tends to stay open, so it checks again every hour.
 		return m, tea.Tick(time.Hour, func(time.Time) tea.Msg { return updateCheckMsg{} })
@@ -804,14 +835,26 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 					m.openSetup()
 				case len(themeCommands) + 1:
 					return m, m.openServerSetup()
+				case len(themeCommands) + 2:
+					m.paletteOpen = true
+					if m.updateTag != "" {
+						m.restart = true
+						return m, tea.Quit
+					}
+					m.updateStatus = "checking…"
+					if !m.updateChecking {
+						m.updateChecking = true
+						return m, installUpdate(m.appContext, true)
+					}
 				default:
 					m.applyTheme(themeCommands[m.paletteSelected])
 				}
 			case "up":
-				// The two entries after the themes open setup and the server.
-				m.paletteSelected = (m.paletteSelected + len(themeCommands) + 1) % (len(themeCommands) + 2)
+				// The three entries after the themes open setup and the
+				// server, and check for updates.
+				m.paletteSelected = (m.paletteSelected + len(themeCommands) + 2) % (len(themeCommands) + 3)
 			case "down":
-				m.paletteSelected = (m.paletteSelected + 1) % (len(themeCommands) + 2)
+				m.paletteSelected = (m.paletteSelected + 1) % (len(themeCommands) + 3)
 			}
 			return m, nil
 		}
@@ -859,6 +902,21 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 					m.queueBrowsedPlaylist()
 				}
 				return m, m.requestYouTubeTrack(m.youtubeMusicTrackSelected)
+			}
+		case "home", "end":
+			if !m.youtubeMusicLoading {
+				first := msg.String() == "home"
+				if m.youtubeMusicView == youtubeMusicLibraryView {
+					m.youtubeMusicPlaylistSelected = 0
+					if !first {
+						m.youtubeMusicPlaylistSelected = max(0, len(m.youtubeMusicPlaylists)-1)
+					}
+				} else {
+					m.youtubeMusicTrackSelected = 0
+					if !first {
+						m.youtubeMusicTrackSelected = max(0, len(m.youtubeMusicPlaylist.Tracks)-1)
+					}
+				}
 			}
 		case "up":
 			if !m.youtubeMusicLoading {
@@ -1070,8 +1128,8 @@ func (m Model) View() string {
 		}
 		serverDot = lipgloss.NewStyle().Foreground(color).Background(m.colors.Background).Render("●")
 	}
-	if m.updateNotice != "" {
-		folderSize = m.updateNotice
+	if m.updateTag != "" {
+		folderSize = "UPDATED TO " + m.updateTag + " · CTRL+P TO RESTART"
 	}
 	panel := ui.Panel("MUSIC", serverDot, m.musicMainView(m.width, m.height), m.width, m.height, true, m.colors, folderSize, hints...)
 
@@ -1106,9 +1164,20 @@ func (m Model) paletteView() string {
 	if m.paletteSelected == len(themeCommands)+1 {
 		serverCursor = lipgloss.NewStyle().Foreground(m.colors.Magenta).Bold(true).Render("> ")
 	}
+	updateCursor := "  "
+	if m.paletteSelected == len(themeCommands)+2 {
+		updateCursor = lipgloss.NewStyle().Foreground(m.colors.Magenta).Bold(true).Render("> ")
+	}
+	updateLabel := "check for updates"
+	if m.updateTag != "" {
+		updateLabel = "restart into " + m.updateTag
+	} else if m.updateStatus != "" {
+		updateLabel += " · " + m.updateStatus
+	}
 	lines = append(lines, "", lipgloss.NewStyle().Foreground(m.colors.Muted).Render("SETUP"),
 		cursor+lipgloss.NewStyle().Foreground(m.colors.Foreground).Bold(m.paletteSelected == len(themeCommands)).Render("browser and music folder"),
-		serverCursor+lipgloss.NewStyle().Foreground(m.colors.Foreground).Bold(m.paletteSelected == len(themeCommands)+1).Render("BMP server (share with phones)"))
+		serverCursor+lipgloss.NewStyle().Foreground(m.colors.Foreground).Bold(m.paletteSelected == len(themeCommands)+1).Render("BMP server (share with phones)"),
+		updateCursor+lipgloss.NewStyle().Foreground(m.colors.Foreground).Bold(m.paletteSelected == len(themeCommands)+2).Render(updateLabel))
 	lines = append(lines, "", ui.Shortcuts(m.colors,
 		ui.Hint{Key: "↑↓", Label: "select"},
 		ui.Hint{Key: "↵", Label: "apply"},
