@@ -145,6 +145,13 @@ func downloadYouTubeMusicTrack(
 			_ = emit(base)
 			return
 		}
+		// YouTube refuses the link until the time it gives, which yt-dlp
+		// waits for too.
+		select {
+		case <-time.After(time.Until(resolved.AvailableAt)):
+		case <-ctx.Done():
+			return
+		}
 		base.phase = musicCacheDownloading
 		base.totalBytes = resolved.ContentLength
 		if !emit(base) {
@@ -155,7 +162,11 @@ func downloadYouTubeMusicTrack(
 		if artist == "" {
 			artist = resolved.Artist
 		}
-		path, err = cache.Store(ctx, track.VideoID, track.Title, artist, resolved.Container, resolved.URL, resolved.HTTPHeaders, func(progress musiccache.Progress) {
+		// YouTube slows a request for the whole file down to playback speed,
+		// but not one for a byte range, which yt-dlp asks for too. The range
+		// covers the 256 MiB a song may take.
+		url := resolved.URL + "&range=0-268435455"
+		path, err = cache.Store(ctx, track.VideoID, track.Title, artist, resolved.Container, url, resolved.HTTPHeaders, func(progress musiccache.Progress) {
 			percent := -1
 			if progress.Total > 0 {
 				percent = int(progress.Downloaded * 100 / progress.Total)

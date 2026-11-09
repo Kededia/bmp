@@ -24,6 +24,8 @@ type Result struct {
 	Title         string
 	Artist        string
 	Duration      time.Duration
+	// AvailableAt is when YouTube starts serving URL; it refuses it before.
+	AvailableAt time.Time
 }
 
 // YTDLPResolver uses yt-dlp JSON output. yt-dlp must be available on PATH.
@@ -179,6 +181,7 @@ func parseOutput(output []byte) (Result, error) {
 		Artist    string            `json:"artist"`
 		Uploader  string            `json:"uploader"`
 		Duration  float64           `json:"duration"`
+		Available int64             `json:"available_at"`
 	}
 	if err := json.Unmarshal(output, &payload); err != nil {
 		return Result{}, fmt.Errorf("decode yt-dlp output: %w", err)
@@ -193,7 +196,8 @@ func parseOutput(output []byte) (Result, error) {
 	return Result{
 		URL: payload.URL, Container: payload.Extension, ContentLength: payload.FileSize,
 		HTTPHeaders: payload.Headers, Title: payload.Title, Artist: artist,
-		Duration: time.Duration(payload.Duration * float64(time.Second)),
+		Duration:    time.Duration(payload.Duration * float64(time.Second)),
+		AvailableAt: time.Unix(payload.Available, 0),
 	}, nil
 }
 
