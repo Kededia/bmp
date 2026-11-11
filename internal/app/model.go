@@ -437,10 +437,9 @@ func readYouTubeMusicPlaylist(parent context.Context, client *youtubemusic.Clien
 // another ID than the one downloaded, such as the music video instead of the
 // audio track, the ID of the song in the music folder, so they keep their
 // plays and are not downloaded again. Among several downloads of a song, the
-// most played wins. Owned playlists keep YouTube's IDs, which their edits on
-// YouTube Music need.
+// most played stays and the others are deleted.
 func useDownloadedIDs(playlist *youtubemusic.Playlist, cache *musiccache.Cache, store *musicstore.Store) {
-	if playlist.Owned || cache == nil {
+	if cache == nil {
 		return
 	}
 	songs, err := cache.SongIDs()
@@ -465,7 +464,16 @@ func useDownloadedIDs(playlist *youtubemusic.Playlist, cache *musiccache.Cache, 
 				best = id
 			}
 		}
-		playlist.Tracks[index].VideoID = best
+		for _, id := range ids {
+			if id != best {
+				cache.Remove(id)
+			}
+		}
+		songs[musiccache.SongKey(track.Title, trackArtistNames(track.Artists))] = []string{best}
+		if best != track.VideoID {
+			playlist.Tracks[index].YouTubeID = track.VideoID
+			playlist.Tracks[index].VideoID = best
+		}
 	}
 }
 
@@ -607,6 +615,8 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 			}
 			m.youtubeMusicView = youtubeMusicPlaylistView
 			if m.youtubeMusicCache != nil {
+				// Loading the playlist can delete extra copies of its songs.
+				m.youtubeMusicCached = make(map[string]string)
 				if cachedTracks, cacheErr := m.youtubeMusicCache.Tracks(); cacheErr == nil {
 					for _, track := range cachedTracks {
 						m.youtubeMusicCached[track.VideoID] = track.Path

@@ -35,6 +35,9 @@ type Track struct {
 	// SetVideoID identifies the song's entry in a playlist, which YouTube
 	// Music needs to remove or move it.
 	SetVideoID string `json:",omitempty"`
+	// YouTubeID is the ID YouTube Music lists the song under, when VideoID
+	// is that of the same song in the music folder.
+	YouTubeID string `json:",omitempty"`
 }
 
 var thumbnailSize = regexp.MustCompile(`=w\d+-h\d+`)

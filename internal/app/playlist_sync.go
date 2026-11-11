@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -22,6 +23,8 @@ type playlistSync struct {
 	kind       string // "add", "remove" or "move"
 	playlistID string
 	videoID    string
+	// youtubeID is the ID YouTube Music lists a removed song under.
+	youtubeID string
 	// beforeVideoID is the song a moved one now precedes, empty at the end.
 	beforeVideoID string
 }
@@ -87,7 +90,7 @@ func (m *Model) nextSync() tea.Cmd {
 		case entry == "" || (sync.beforeVideoID != "" && before == ""):
 			err = missing
 		case sync.kind == "remove":
-			err = client.RemoveFromPlaylist(ctx, sync.playlistID, sync.videoID, entry)
+			err = client.RemoveFromPlaylist(ctx, sync.playlistID, cmp.Or(sync.youtubeID, sync.videoID), entry)
 		default:
 			err = client.MoveInPlaylist(ctx, sync.playlistID, entry, before)
 		}

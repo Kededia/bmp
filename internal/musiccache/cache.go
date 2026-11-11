@@ -456,6 +456,18 @@ func (cache *Cache) SongIDs() (map[string][]string, error) {
 	return ids, nil
 }
 
+// Remove deletes the song stored under videoID. A song playing stays until a
+// later call.
+func (cache *Cache) Remove(videoID string) {
+	path, found, err := cache.Lookup(videoID)
+	if err != nil || !found || os.Remove(path) != nil {
+		return
+	}
+	cache.mu.Lock()
+	delete(cache.index, videoID)
+	cache.mu.Unlock()
+}
+
 // SongKey is the key of a song in SongIDs.
 func SongKey(title, artist string) string {
 	return strings.ToLower(songName(title, artist))

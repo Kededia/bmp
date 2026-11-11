@@ -220,7 +220,8 @@ func (m *Model) removeSelectedTrack() tea.Cmd {
 	videoID := m.youtubeMusicPlaylist.Tracks[index].VideoID
 	var sync tea.Cmd
 	if m.youtubeMusicPlaylist.Owned {
-		sync = m.queueSync(playlistSync{kind: "remove", playlistID: m.youtubeMusicPlaylist.ID, videoID: videoID})
+		sync = m.queueSync(playlistSync{kind: "remove", playlistID: m.youtubeMusicPlaylist.ID, videoID: videoID,
+			youtubeID: m.youtubeMusicPlaylist.Tracks[index].YouTubeID})
 	} else {
 		m.youtubeMusicEdits.Added = withoutTrack(m.youtubeMusicEdits.Added, videoID)
 		m.youtubeMusicEdits.Removed = append(m.youtubeMusicEdits.Removed, videoID)
