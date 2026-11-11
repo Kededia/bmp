@@ -414,7 +414,7 @@ func readYouTubeMusicLibrary(parent context.Context, browser string) tea.Cmd {
 	}
 }
 
-func readYouTubeMusicPlaylist(parent context.Context, client *youtubemusic.Client, server *serverapi.Client, id string) tea.Cmd {
+func readYouTubeMusicPlaylist(parent context.Context, client *youtubemusic.Client, server *serverapi.Client, cache *musiccache.Cache, store *musicstore.Store, id string) tea.Cmd {
 	return func() tea.Msg {
 		if client == nil {
 			return youtubeMusicPlaylistMsg{err: errors.New("YouTube Music is not configured")}
@@ -422,6 +422,7 @@ func readYouTubeMusicPlaylist(parent context.Context, client *youtubemusic.Clien
 		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 		defer cancel()
 		playlist, err := client.GetPlaylist(ctx, id)
+		useDownloadedIDs(&playlist, cache, store)
 		msg := youtubeMusicPlaylistMsg{playlist: playlist, err: err}
 		if err == nil && server != nil && !playlist.Owned {
 			if edits, err := server.Edits(ctx, id); err == nil {
@@ -429,6 +430,42 @@ func readYouTubeMusicPlaylist(parent context.Context, client *youtubemusic.Clien
 			}
 		}
 		return msg
+	}
+}
+
+// useDownloadedIDs gives the songs of a playlist that YouTube lists under
+// another ID than the one downloaded, such as the music video instead of the
+// audio track, the ID of the song in the music folder, so they keep their
+// plays and are not downloaded again. Among several downloads of a song, the
+// most played wins. Owned playlists keep YouTube's IDs, which their edits on
+// YouTube Music need.
+func useDownloadedIDs(playlist *youtubemusic.Playlist, cache *musiccache.Cache, store *musicstore.Store) {
+	if playlist.Owned || cache == nil {
+		return
+	}
+	songs, err := cache.SongIDs()
+	if err != nil {
+		return
+	}
+	for index, track := range playlist.Tracks {
+		ids := songs[musiccache.SongKey(track.Title, trackArtistNames(track.Artists))]
+		if len(ids) == 0 || len(ids) == 1 && ids[0] == track.VideoID {
+			continue
+		}
+		var counts map[string]uint64
+		if store != nil {
+			counts, _ = store.Counts(append(slices.Clip(ids), track.VideoID))
+		}
+		best := ids[0]
+		if slices.Contains(ids, track.VideoID) {
+			best = track.VideoID
+		}
+		for _, id := range ids {
+			if counts[id] > counts[best] {
+				best = id
+			}
+		}
+		playlist.Tracks[index].VideoID = best
 	}
 }
 
@@ -523,7 +560,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 				}
 				m.youtubeMusicPlaylistSelected = index
 				m.youtubeMusicLoading = true
-				return m, tea.Batch(readYouTubeMusicPlaylist(m.appContext, m.youtubeMusicClient, m.server, restoredPlaylistID), m.startServerSync())
+				return m, tea.Batch(readYouTubeMusicPlaylist(m.appContext, m.youtubeMusicClient, m.server, m.youtubeMusicCache, m.youtubeMusicStore, restoredPlaylistID), m.startServerSync())
 			}
 			m.musicRestorePending = false
 		}
@@ -907,7 +944,7 @@ func (m Model) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) {
 					queue := m.youtubeMusicQueue
 					return m, func() tea.Msg { return youtubeMusicPlaylistMsg{playlist: queue} }
 				}
-				return m, readYouTubeMusicPlaylist(m.appContext, m.youtubeMusicClient, m.server, selected.ID)
+				return m, readYouTubeMusicPlaylist(m.appContext, m.youtubeMusicClient, m.server, m.youtubeMusicCache, m.youtubeMusicStore, selected.ID)
 			}
 			if m.youtubeMusicView == youtubeMusicPlaylistView && !m.youtubeMusicResolving {
 				if !m.browsingQueue() {

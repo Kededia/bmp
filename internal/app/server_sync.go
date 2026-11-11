@@ -55,7 +55,7 @@ type backgroundTickMsg struct{}
 // syncServer exchanges plays with the server and, signed in to YouTube
 // Music, sends it the library: every playlist read again, with its BMP edits
 // applied.
-func syncServer(parent context.Context, server *serverapi.Client, store *musicstore.Store, client *youtubemusic.Client, playlists []youtubemusic.Playlist) tea.Cmd {
+func syncServer(parent context.Context, server *serverapi.Client, store *musicstore.Store, cache *musiccache.Cache, client *youtubemusic.Client, playlists []youtubemusic.Playlist) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 		defer cancel()
@@ -73,6 +73,7 @@ func syncServer(parent context.Context, server *serverapi.Client, store *musicst
 				if err != nil {
 					continue
 				}
+				useDownloadedIDs(&playlist, cache, store)
 				if store != nil && !playlist.Owned {
 					if edits, err := store.Edits(playlist.ID); err == nil {
 						playlist = applyEdits(playlist, edits)
@@ -197,7 +198,7 @@ func (m *Model) startServerSync() tea.Cmd {
 		playlists = slices.Clone(m.youtubeMusicPlaylists)
 	}
 	return tea.Batch(reachServer(m.appContext, m.server),
-		syncServer(m.appContext, m.server, m.youtubeMusicStore, m.youtubeMusicClient, playlists))
+		syncServer(m.appContext, m.server, m.youtubeMusicStore, m.youtubeMusicCache, m.youtubeMusicClient, playlists))
 }
 
 // startUploads uploads the songs the server lacks, or once more after the

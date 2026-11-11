@@ -423,7 +423,11 @@ func (reader *progressReader) Read(buffer []byte) (int, error) {
 }
 
 func trackFilename(videoID, title, artist, extension string) string {
-	videoID = safeComponent(videoID, 24)
+	return songName(title, artist) + " [" + safeComponent(videoID, 24) + "]." + extension
+}
+
+// songName is the part of a song's filename before its video ID.
+func songName(title, artist string) string {
 	title = safeComponent(title, 100)
 	artist = safeComponent(artist, 60)
 	base := title
@@ -433,7 +437,28 @@ func trackFilename(videoID, title, artist, extension string) string {
 	if base == "" {
 		base = "Unknown track"
 	}
-	return base + " [" + videoID + "]." + extension
+	return base
+}
+
+// SongIDs lists the video IDs of the songs in the folder by artist and
+// title, as YouTube can list a downloaded song under another ID, such as its
+// music video instead of its audio track. Find a song's IDs with SongKey.
+func (cache *Cache) SongIDs() (map[string][]string, error) {
+	tracks, err := cache.Tracks()
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string][]string, len(tracks))
+	for _, track := range tracks {
+		key := strings.ToLower(songName(track.Title, track.Artist))
+		ids[key] = append(ids[key], track.VideoID)
+	}
+	return ids, nil
+}
+
+// SongKey is the key of a song in SongIDs.
+func SongKey(title, artist string) string {
+	return strings.ToLower(songName(title, artist))
 }
 
 func safeExtension(extension string) string {
