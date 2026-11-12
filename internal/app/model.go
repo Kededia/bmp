@@ -446,6 +446,11 @@ func useDownloadedIDs(playlist *youtubemusic.Playlist, cache *musiccache.Cache, 
 	if err != nil {
 		return
 	}
+	listed := make(map[string]bool, len(playlist.Tracks))
+	for _, track := range playlist.Tracks {
+		listed[track.VideoID] = true
+	}
+	duplicates := make(map[int]bool)
 	for index, track := range playlist.Tracks {
 		ids := songs[musiccache.SongKey(track.Title, trackArtistNames(track.Artists))]
 		if len(ids) == 0 || len(ids) == 1 && ids[0] == track.VideoID {
@@ -471,9 +476,26 @@ func useDownloadedIDs(playlist *youtubemusic.Playlist, cache *musiccache.Cache, 
 		}
 		songs[musiccache.SongKey(track.Title, trackArtistNames(track.Artists))] = []string{best}
 		if best != track.VideoID {
+			// A song liked both as its audio track and its music video is
+			// listed once.
+			if listed[best] {
+				duplicates[index] = true
+				continue
+			}
+			listed[best] = true
 			playlist.Tracks[index].YouTubeID = track.VideoID
 			playlist.Tracks[index].VideoID = best
 		}
+	}
+	if len(duplicates) > 0 {
+		tracks := playlist.Tracks[:0]
+		for index, track := range playlist.Tracks {
+			if !duplicates[index] {
+				tracks = append(tracks, track)
+			}
+		}
+		playlist.Tracks = tracks
+		playlist.TrackCount = len(tracks)
 	}
 }
 

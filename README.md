@@ -28,7 +28,7 @@ BMP updates itself from new releases. It needs Windows 10 or 11 with Chrome or E
 
 `bmpd` keeps your songs, playlists and play counts on a server so phones can play them through a Subsonic app (Ultrasonic, Tempo or Symfonium on Android). BMP stays the one talking to YouTube: it uploads the songs it downloads and, while it runs, slowly downloads the rest of your playlists for the server (Liked Songs only as you play its songs).
 
-1. Build it for the server, from PowerShell: `$env:GOOS="linux"; go build -o bmpd ./cmd/bmpd; $env:GOOS=""`, and copy `bmpd` there.
+1. Build it for a Linux server with `bmpd.cmd`, and copy the `bmpd` it makes there.
 2. Add a user: `bmpd -data /var/lib/bmpd adduser kededia`. Note the password and API key it prints; they are shown once.
 3. Run it with a domain pointing at the server: `bmpd -data /var/lib/bmpd -domain music.example.com`. It gets its HTTPS certificate from Let's Encrypt (ports 80 and 443 must be open). As a systemd service: `ExecStart=/usr/local/bin/bmpd -data /var/lib/bmpd -domain music.example.com`.
 4. In BMP, `Ctrl+P` → BMP server: enter the address, user and password.

@@ -436,11 +436,14 @@ func (catalog catalog) song(id string) (child, bool) {
 func (catalog catalog) playlist(source youtubemusic.Playlist, owner string) playlist {
 	stamp := catalog.library.Updated.UTC().Format(time.RFC3339)
 	converted := playlist{ID: source.ID, Name: source.Title, Owner: owner, Created: stamp, Changed: stamp, Entries: []child{}}
+	// Apps such as Substreamer fail on a playlist holding a song twice.
+	seen := make(map[string]bool, len(source.Tracks))
 	for _, track := range source.Tracks {
 		song, found := catalog.song(track.VideoID)
-		if !found {
+		if !found || seen[track.VideoID] {
 			continue
 		}
+		seen[track.VideoID] = true
 		converted.Entries = append(converted.Entries, song)
 		converted.Duration += song.Duration
 	}

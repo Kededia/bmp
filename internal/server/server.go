@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -214,7 +215,38 @@ func (server *Server) putLibrary(writer http.ResponseWriter, request *http.Reque
 		serverError(writer, err)
 		return
 	}
+	opened.removeExtraCopies(snapshot)
 	writer.WriteHeader(http.StatusNoContent)
+}
+
+// removeExtraCopies deletes the songs BMP downloaded twice under two IDs,
+// as YouTube can list a song under its music video's ID as well as its
+// audio track's: of the copies sharing a name, those no playlist uses go
+// once a playlist uses one of them.
+func (opened *library) removeExtraCopies(snapshot musicstore.Library) {
+	used := make(map[string]bool)
+	for _, playlist := range snapshot.Playlists {
+		for _, track := range playlist.Tracks {
+			used[track.VideoID] = true
+		}
+	}
+	songs, err := opened.music.SongIDs()
+	if err != nil {
+		return
+	}
+	covers := filepath.Join(opened.music.Directory(), "covers")
+	for _, ids := range songs {
+		if len(ids) < 2 || !slices.ContainsFunc(ids, func(id string) bool { return used[id] }) {
+			continue
+		}
+		for _, id := range ids {
+			if !used[id] {
+				opened.music.Remove(id)
+				_ = os.Remove(filepath.Join(covers, id+".jpg"))
+				_ = os.Remove(filepath.Join(covers, id+"-video.jpg"))
+			}
+		}
+	}
 }
 
 func (server *Server) getPlays(writer http.ResponseWriter, _ *http.Request, opened *library) {
