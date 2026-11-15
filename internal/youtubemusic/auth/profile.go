@@ -62,13 +62,14 @@ type devtools struct {
 }
 
 // closeProfileBrowsers ends the browsers left running on BMP's profile, such
-// as a hidden one whose BMP was closed while it read the cookies. The
+// as a hidden one whose BMP was closed while it read the cookies, matching
+// the profile however the command line quotes it. The
 // browser hands a new window on a profile in use to the browser holding it,
 // so a hidden one would swallow the sign-in window.
 func closeProfileBrowsers(executable, profile string) {
 	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
 	script := "Get-CimInstance Win32_Process -Filter \"Name='" + filepath.Base(executable) + "'\" | " +
-		"Where-Object { $_.CommandLine -and $_.CommandLine.Contains(" + quote("--user-data-dir="+profile) + ") } | " +
+		"Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf(" + quote(profile) + ", [StringComparison]::OrdinalIgnoreCase) -ge 0 } | " +
 		"ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Run()
 }
