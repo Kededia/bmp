@@ -61,9 +61,33 @@ type devtools struct {
 	lastID  int
 }
 
+// closeProfileBrowsers ends the browsers left running on BMP's profile, such
+// as a hidden one whose BMP was closed while it read the cookies. The
+// browser hands a new window on a profile in use to the browser holding it,
+// so a hidden one would swallow the sign-in window.
+func closeProfileBrowsers(executable, profile string) {
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
+	script := "Get-CimInstance Win32_Process -Filter \"Name='" + filepath.Base(executable) + "'\" | " +
+		"Where-Object { $_.CommandLine -and $_.CommandLine.Contains(" + quote("--user-data-dir="+profile) + ") } | " +
+		"ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+	_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Run()
+}
+
 // openProfile starts a hidden browser on BMP's profile with its DevTools port
-// open, and connects to it.
+// open, and connects to it, closing first a browser left on the profile.
 func openProfile(ctx context.Context) (*devtools, error) {
+	tools, err := startProfile(ctx)
+	if errors.Is(err, errClosedAtOnce) {
+		executable, profile, _ := profileBrowser()
+		closeProfileBrowsers(executable, profile)
+		tools, err = startProfile(ctx)
+	}
+	return tools, err
+}
+
+var errClosedAtOnce = errors.New("the browser closed at once; close any window BMP opened for sign-in and try again")
+
+func startProfile(ctx context.Context) (*devtools, error) {
 	executable, profile, err := profileBrowser()
 	if err != nil {
 		return nil, err
@@ -104,7 +128,7 @@ func openProfile(ctx context.Context) (*devtools, error) {
 		case <-ctx.Done():
 			return fail(ctx.Err())
 		case <-exited:
-			return nil, errors.New("the browser closed at once; close any window BMP opened for sign-in and try again")
+			return nil, errClosedAtOnce
 		case <-deadline:
 			return fail(errors.New("the browser did not start in time"))
 		case <-time.After(100 * time.Millisecond):
@@ -230,6 +254,7 @@ func SignIn(ctx context.Context) error {
 	if err := os.MkdirAll(profile, 0o700); err != nil {
 		return fmt.Errorf("create browser profile: %w", err)
 	}
+	closeProfileBrowsers(executable, profile)
 	command := exec.CommandContext(ctx, executable, "--user-data-dir="+profile,
 		"--no-first-run", "--no-default-browser-check", "--disable-background-mode", "--new-window", profileStartURL)
 	if err := command.Run(); err != nil && ctx.Err() == nil {
